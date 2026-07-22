@@ -17,7 +17,7 @@ export default function Login() {
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
         <h1>SEPA <span style={{ color: "var(--blue)" }}>Board</span></h1>
-        <p>Minervini screener — US market</p>
+        <p>Minervini screener — Bursa Malaysia</p>
         <input type="password" placeholder="Password" value={pw}
           onChange={(e) => { setPw(e.target.value); setErr(false); }} autoFocus />
         <button type="submit">Sign in</button>

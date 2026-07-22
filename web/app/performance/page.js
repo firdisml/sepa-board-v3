@@ -90,8 +90,9 @@ export default async function Performance() {
   const regime = bundle?.run?.regime || null;
   const rv = weekly?.review;
 
-  // US only since the moomoo migration (Bursa data is unavailable via OpenD)
-  // structure and behavior differ too much for a blended expectancy to mean much
+  // Bursa only in v3.0 (US parked). Kept per-market rather than blended: the
+  // two markets' structure and behaviour differ too much for a combined
+  // expectancy to mean anything.
   const markets = [
     ["United States", "us", rows.filter((r) => r.market === "US")],
   ].filter(([, , subset]) => subset.length > 0);

@@ -1,6 +1,6 @@
 import "./globals.css";
 
-export const metadata = { title: "SEPA Board", description: "Minervini screener — US market" };
+export const metadata = { title: "SEPA Board", description: "Minervini screener — Bursa Malaysia" };
 
 export default function RootLayout({ children }) {
   return (

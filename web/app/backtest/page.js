@@ -66,7 +66,7 @@ export default async function Backtests({ searchParams }) {
             <div className="panel">
               <h3>
                 Equity curve — {sel.label || `run #${sel.id}`}
-                {sel.params?.market && <span className="tag us">US only</span>}
+                {sel.params?.market && <span className="tag us">{sel.params.market} only</span>}
               </h3>
               <LineChart points={curve} height={240} fmt={(v) => v.toLocaleString()} />
               <div className="legend">

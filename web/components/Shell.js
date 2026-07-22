@@ -45,7 +45,7 @@ export default function Shell({ regime, asOf, active = "/", children }) {
       <aside className="sidebar">
         <div>
           <div className="brand">SEPA <span className="tick">Board</span></div>
-          <div className="brand-sub">Minervini screener · US</div>
+          <div className="brand-sub">Minervini screener · Bursa</div>
         </div>
         <nav className="side-nav">
           {links.map(([href, label]) => (
