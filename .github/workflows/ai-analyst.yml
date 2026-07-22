@@ -1,0 +1,35 @@
+name: ai-analyst
+
+on:
+  # Chained on the scan, but deliberately a SEPARATE workflow: a Gemini outage
+  # must turn this red without touching the mechanical pipeline that produced
+  # the board. The board is the product; the commentary is a layer on top.
+  workflow_run:
+    workflows: [scan-my]
+    types: [completed]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ai-analyst
+  cancel-in-progress: false
+
+jobs:
+  analyst:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    # MY-only load is ~30-45 notes; the search-grounded ones are the slow part
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scanner/requirements.txt
+      - name: Install dependencies
+        run: pip install -r scanner/requirements.txt
+      - name: Generate morning brief + per-pick notes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python -m scanner.analyst
