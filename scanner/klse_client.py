@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import re
 import time
 from io import StringIO
@@ -40,11 +41,23 @@ log = logging.getLogger(__name__)
 BASE = "https://www.klsescreener.com"
 STOCK_PATH = "/v2/stocks/view/{code}"
 TIMEOUT = 45
-THROTTLE = 1.5          # seconds between fetches — be a polite guest
+# Measured 2026-07-22: ~5 requests at 1.5s spacing trips a burst limit that
+# returns HTTP 200 with the tables stripped out; 10s spacing ran clean. 8s is
+# the compromise, and it still fits §7.1's ~10 pages/night in under two minutes.
+THROTTLE = float(os.environ.get("KLSE_THROTTLE", "8"))
+TIMEOUT_BACKOFF = (15, 45, 90)   # waits after a suspected soft-block
 RETRIES = 2
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+# Sent on every request. See `fetch` for why these are assigned, not defaulted.
+BROWSER_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+}
 
 # Column signatures identifying each table regardless of position. `deny`
 # disambiguates: the annual table's columns are a SUBSET of the quarterly
@@ -93,26 +106,55 @@ def _absolute(href: str) -> str:
 
 
 def fetch(code: str, session: requests.Session | None = None) -> str:
-    """GET a counter's page. Throttled, retried once on transport failure."""
+    """GET a counter's page. Throttled, retried once on transport failure.
+
+    HEADERS MUST BE ASSIGNED, NOT `setdefault`: a `requests.Session` is born
+    carrying `User-Agent: python-requests/x.y`, so setdefault silently keeps it
+    and every request announces itself as a script — which this site answers
+    with 403. That bug was invisible for a while because the parser tests read
+    a saved fixture and the early probes passed headers to `requests.get`
+    directly, so this function was never exercised live.
+    """
     s = session or requests.Session()
-    s.headers.setdefault("User-Agent", UA)
+    s.headers.update(BROWSER_HEADERS)
     url = stock_url(code)
     last = None
-    for attempt in range(RETRIES):
+    for attempt in range(len(TIMEOUT_BACKOFF) + 1):
         try:
             r = s.get(url, timeout=TIMEOUT)
             if r.status_code == 404:
                 raise ParseFailure(f"{code}: no such counter (404)")
+            if r.status_code in (403, 429):
+                raise ParseFailure(
+                    f"{code}: refused by source (HTTP {r.status_code}) — "
+                    f"check headers before retrying")
             r.raise_for_status()
+            if _throttled(r.text):
+                # A burst limit answers 200 with the tables stripped out. Calling
+                # that "layout changed" would send someone hunting a parser bug
+                # that does not exist, so name it and wait it out.
+                if attempt < len(TIMEOUT_BACKOFF):
+                    wait = TIMEOUT_BACKOFF[attempt]
+                    log.warning("%s: throttled by source, backing off %ds", code, wait)
+                    time.sleep(wait)
+                    continue
+                raise ParseFailure(f"{code}: still throttled after "
+                                   f"{len(TIMEOUT_BACKOFF)} backoffs")
             time.sleep(THROTTLE)
             return r.text
         except ParseFailure:
             raise
         except Exception as e:
             last = e
-            if attempt < RETRIES - 1:
+            if attempt < len(TIMEOUT_BACKOFF):
                 time.sleep(2 + attempt * 2)
     raise ParseFailure(f"{code}: fetch failed — {last}")
+
+
+def _throttled(html: str) -> bool:
+    """A served page always carries table rows. HTTP 200 with none means the
+    burst limit stripped it, NOT that the site changed shape."""
+    return html.count("<tr") < 20
 
 
 # ---------------------------------------------------------------- tables

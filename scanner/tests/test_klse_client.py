@@ -105,6 +105,34 @@ class TestAnnouncementsAndNews:
         assert k.classify("Change of Registered Address") == "other"
 
 
+class TestFetchGuards:
+    """Regression tests for two live-only bugs the fixture tests cannot see."""
+
+    def test_browser_headers_are_sent(self):
+        # `requests.Session` is born with User-Agent: python-requests/x.y, which
+        # this source answers with 403. The original code used headers.setdefault,
+        # a silent no-op, so fetch() never once worked live.
+        assert "Mozilla" in k.BROWSER_HEADERS["User-Agent"]
+        assert "python-requests" not in k.BROWSER_HEADERS["User-Agent"]
+
+    def test_session_headers_are_overridden_not_defaulted(self):
+        import requests
+        s = requests.Session()
+        assert "python-requests" in s.headers["User-Agent"]  # the trap
+        s.headers.update(k.BROWSER_HEADERS)
+        assert "Mozilla" in s.headers["User-Agent"]
+
+    def test_throttled_page_detected(self):
+        # A burst limit answers 200 with the rows stripped. That must NOT be
+        # reported as a layout change, or it sends someone chasing a phantom bug.
+        assert k._throttled("<html><body>nothing here</body></html>")
+        assert not k._throttled("<tr>" * 50)
+
+    def test_throttle_is_not_aggressive(self):
+        # measured: ~5 requests at 1.5s spacing trips the limit; 10s ran clean
+        assert k.THROTTLE >= 5
+
+
 class TestNumberParsing:
     def test_handles_bursa_formats(self):
         assert k._num("14,915,455") == 14915455.0
