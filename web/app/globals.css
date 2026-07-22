@@ -1,20 +1,46 @@
+/* DARK BRUTALIST — PLAN §8.1. Single dark theme, deliberately: the light
+   variants were rejected after three mockup iterations (full-loud neubrutalism
+   caused eye strain on a data-dense screener; calm-light lost the personality).
+
+   The loudness budget is the load-bearing rule. Regime blocks and one CTA are
+   the ONLY shouting elements; EP is the only filled tag; everything else is
+   outline-only, and the table stays the calm protagonist. Break that and the
+   screen stops being readable at 8:30pm every night. */
 :root {
-  --bg: #0c0f14;
-  --panel: #141922;
-  --panel-2: #1a2029;
-  --line: #232b37;
-  --ink: #e8ecf3;
-  --dim: #8b95a7;
-  --faint: #5a6475;
-  --green: #2fd181;
-  --green-bg: #0e2a1d;
-  --red: #f4544c;
-  --red-bg: #331512;
-  --blue: #4b6bff;
-  --amber: #f2b33d;
-  --purple: #9a6bff;
-  --r: 14px;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  /* ground */
+  --bg: #121210;          /* charcoal canvas */
+  --panel: #1B1B18;       /* cards */
+  --panel-2: #1B1B18;
+  --line: #33322D;        /* hairlines inside tables */
+
+  /* ink */
+  --ink: #F5F3EA;         /* cream */
+  --dim: #9B988C;
+  --faint: #9B988C;
+
+  /* semantics — brightened for the dark ground; meanings are sacred */
+  --green: #2EE6A8;
+  --green-bg: #12291F;
+  --red: #FF6B52;
+  --red-bg: #2B1512;
+
+  /* accents */
+  --pink: #FF90E8;        /* brand, EP tag, focus rings, hero shadows */
+  --yellow: #FFD23F;      /* maturing strip, MY market marks */
+  --blue: #74B9FF;        /* info */
+  --amber: #FFD23F;
+  --purple: #FF90E8;
+
+  /* structure — brutalism lives in the frame, not the data */
+  --r: 0px;               /* border-radius: 0 EVERYWHERE */
+  --bw: 2.5px;            /* panel borders, solid cream */
+  --sh-panel: 4px 4px 0 0 var(--ink);
+  --sh-hero: 8px 8px 0 0 var(--pink);
+  --sh-strip: 3px 3px 0 0 var(--yellow);
+
+  --sans: var(--font-inter), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --display: var(--font-grotesk), var(--sans);
+  --mono: var(--font-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -23,7 +49,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 14px/1.55 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 14px/1.55 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
 a { color: inherit; text-decoration: none; }
@@ -288,4 +314,106 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+/* ============================================================
+   DARK BRUTALIST LAYER (PLAN §8.1)
+   Applied last so it overrides the inherited v2 surface styling
+   without every component needing to be rewritten.
+   ============================================================ */
+
+/* Nothing is rounded. Radius is the single strongest signal of the old
+   look, so it is removed globally rather than panel by panel. */
+*, *::before, *::after { border-radius: 0 !important; }
+
+h1, h2, h3, h4, .brand, .stat-big, .bucket-head {
+  font-family: var(--display);
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+/* All numbers are monospace and tabular: columns of prices must align
+   digit-for-digit or a scan-read of the board is impossible. */
+.num, td.num, .stat-big, .calc-row .v, .r-mult, .pill, table td:last-child {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Panels: glowing cream outlines, hard shadow with ZERO blur. */
+.panel, .card, .login-card, .calc, .regime-box, .brief, .maturing {
+  background: var(--panel);
+  border: var(--bw) solid var(--ink);
+  box-shadow: var(--sh-panel);
+}
+
+.brand { color: var(--ink); }
+.brand .tick { color: var(--pink); }
+.sidebar { border-right: var(--bw) solid var(--ink); }
+
+/* Regime blocks are the ONLY full-colour slabs on the screen — black text on
+   a bright fill, cream border, pink hero shadow. That is the whole point of
+   the loudness budget: exposure is the one thing that must interrupt you. */
+.regime-box { color: #121210; box-shadow: var(--sh-hero); border-color: var(--ink); }
+.regime-box.green, .regime-box .light.green { background: var(--green); color: #121210; }
+.regime-box.yellow, .regime-box .light.yellow { background: var(--yellow); color: #121210; }
+.regime-box.red, .regime-box .light.red { background: var(--red); color: #121210; }
+.regime-box .light {
+  font-family: var(--display); font-weight: 900; text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* The maturing-setups strip gets the yellow tier, one step quieter. */
+.maturing { box-shadow: var(--sh-strip); }
+
+/* Tags: outline-only in semantic colour. EP is the sole filled tag, because
+   an episodic pivot is the one setup that is gone if you read it tomorrow. */
+.tag {
+  background: transparent; border: 1.5px solid currentColor;
+  font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 0.5px; padding: 1px 5px;
+}
+.tag.ep, .tag.EP { background: var(--pink); color: #121210; border-color: var(--pink); }
+.tag.us, .tag.my { color: var(--yellow); }
+
+/* The table is the calm protagonist: flat rows, hairline rules, NO shadows,
+   hover is a subtle tint and nothing more. */
+table { border-collapse: collapse; }
+table tr, table td, table th { box-shadow: none !important; }
+table td, table th { border-bottom: 1px solid var(--line); }
+table th {
+  font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 0.8px; color: var(--dim); font-weight: 500;
+}
+tbody tr:hover { background: rgba(245, 243, 234, 0.04); }
+
+/* Interaction: press the object into the page. */
+button, .btn, .side-nav a, .chip {
+  border: 2px solid var(--ink); background: var(--panel); color: var(--ink);
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.5px;
+  transition: transform .08s ease, box-shadow .08s ease;
+}
+button:hover, .btn:hover, .chip:hover {
+  transform: translate(-2px, -2px); box-shadow: var(--sh-panel);
+}
+button:active, .btn:active, .chip:active {
+  transform: translate(3px, 3px); box-shadow: none;
+}
+.chip.active, .side-nav a.active {
+  background: var(--pink); color: #121210; border-color: var(--ink);
+}
+:focus-visible { outline: 3px solid var(--pink); outline-offset: 2px; }
+
+input, select {
+  background: var(--bg); color: var(--ink);
+  border: 2px solid var(--ink); font-family: var(--mono);
+}
+
+/* Charts: style lives in the frame, never in the data. */
+svg .axis, svg .frame { stroke: var(--ink); stroke-width: 2.5; }
+
+/* Mobile: shadows drop one tier, borders stay. Borders are the identity;
+   shadows are the flourish. */
+@media (max-width: 760px) {
+  .panel, .card, .calc, .brief { box-shadow: 2px 2px 0 0 var(--ink); }
+  .regime-box { box-shadow: 4px 4px 0 0 var(--pink); }
 }
