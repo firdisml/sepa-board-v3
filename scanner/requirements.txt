@@ -1,0 +1,10 @@
+yfinance>=0.2.50  # fundamentals + earnings dates only; prices come from EODHD
+pandas>=2.2
+numpy>=1.26
+requests>=2.32
+psycopg[binary]>=3.2
+pandas_market_calendars>=4.4
+TA-Lib>=0.6
+pytest>=8.0
+quantstats>=0.0.62
+google-genai>=1.0

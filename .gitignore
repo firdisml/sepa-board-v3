@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+.pytest_cache/
+*.parquet
+node_modules/
+.next/
+.vercel
+web/node_modules
+web/.next
+web/.env.local
