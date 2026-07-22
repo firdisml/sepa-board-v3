@@ -1,0 +1,58 @@
+name: scan-my
+
+on:
+  # Bursa closes 09:00 UTC. EODHD's documented window is close +2-3h, and a
+  # live probe on 2026-07-22 had the full session at 11:40 UTC, so 12:30 leaves
+  # margin and the board is ready by 8:30pm MYT the same evening.
+  # The freshness gate aborts rather than publishing a day-late board, so a
+  # late feed costs a skipped scan, never a silently wrong one.
+  schedule:
+    - cron: "30 12 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Bypass the trading-calendar session check (SCAN_FORCE)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Run the pipeline but write nothing to the database"
+        type: boolean
+        default: false
+
+concurrency:
+  group: scan-my
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    # The scan itself is seconds of compute; the wall time is the polite
+    # KLSE Screener throttle across candidates. A hung network call must die
+    # here rather than run to GitHub's 6-hour default.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scanner/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scanner/requirements.txt
+
+      # PLAN §11.2 — tests gate the scan. These encode dozens of already-fixed
+      # bugs; a port that breaks one must never reach the board.
+      - name: Tests
+        run: python -m pytest scanner/tests -q
+
+      - name: Scan Bursa Malaysia
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
+          SCAN_MARKETS: MY
+          # inputs are passed as env, never interpolated into the shell (§11.1)
+          SCAN_FORCE: ${{ inputs.force && '1' || '' }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: python -m scanner.scan
