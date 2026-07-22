@@ -1,15 +1,18 @@
-"""Nightly scan entry point — US market, data from moomoo OpenD.
+"""Nightly scan entry point — Bursa Malaysia, data from the candle warehouse.
 
-session check -> moomoo server-side funnel (FREE) -> kline for survivors
--> RS ranks -> trend template -> buckets (swing / position / watchlist /
-forming) -> patterns, setup progress, S/R, targets, reasoning -> institutional
-sponsorship + whale capital flow -> save to Postgres.
+freshness gate -> warehouse window (full universe) -> RS ranks across EVERY
+counter -> liquidity filter -> trend template -> buckets (swing / position /
+watchlist / forming) -> patterns, setup progress, S/R, targets, reasoning ->
+KLSE Screener fundamentals + street data -> Postgres.
 
-Requires OpenD running (see moomoo_client). Runs on the VPS, NOT GitHub
-Actions, because OpenD must be reachable.
+No VPS and no OpenD: prices are read from Postgres, so the scan is pure
+compute and runs on GitHub Actions. The order above matters — RS is ranked on
+the FULL universe BEFORE the liquidity filter, because ranking survivors of a
+pre-filter inflates every rank, and rank >= 70 is a Trend Template gate. v2
+could only rank ~280 names through the moomoo funnel; here it is ~1,030.
 
-Run: python -m scanner.scan   (env: DATABASE_URL, OPEND_HOST/OPEND_PORT,
-MM_* funnel knobs, SCAN_FORCE, SCAN_MIN_ADR)
+Run: python -m scanner.scan   (env: DATABASE_URL, EODHD_API_TOKEN,
+SCAN_MARKETS, SCAN_FORCE, SCAN_MIN_PRICE, SCAN_MY_MIN_DOLLAR_VOL, SCAN_MY_MIN_ADR)
 """
 from __future__ import annotations
 
@@ -17,35 +20,34 @@ import datetime as dt
 import logging
 import os
 import sys
-import time
 
 import pandas as pd
 import pandas_market_calendars as mcal
-# yfinance is kept ONLY for next-earnings dates: moomoo's earnings calendar
-# needs a market-wide query with fiddly enums, while this is a free per-ticker
-# lookup with no quota cost. All price/fundamental data comes from moomoo.
-import yfinance as yf
-from moomoo import Market as mm_Market, RET_OK
+import requests
 
-from . import (db, fundamentals, indicators, moomoo_client as mc, news, patterns,
-               performance, reasoning, sectors)
+from . import (db, fundamentals, indicators, klse_client, news, patterns,
+               performance, reasoning, sectors, warehouse)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scan")
 
-MIN_ADR_PCT = float(os.environ.get("SCAN_MIN_ADR", 2.5))
 CHUNK = 200
 
-# US only. Bursa was dropped when the data source moved to moomoo OpenD, which
-# does not serve Malaysian market data at all (its Authority table lists MY as
-# Unsupported, and a live probe returned "no permission" on every MY call).
+# v3.0 is Bursa-only. US is PARKED, not deleted — the engine stays multi-market
+# so reactivation is this config plus a second cron, not a rebuild (PLAN §1).
 MARKETS = {
-    "US": {
-        "calendar": "NYSE",
-        "indices": ["SPY", "QQQ"],
-        "currency": "$",
-        "min_adr": MIN_ADR_PCT,
+    "MY": {
+        "calendar": "XKLS",
+        "indices": ["0820EA.KL"],   # KLCI ETF: price only, see regime_frame()
+        "currency": "RM",
+        "lot_size": 100,            # Bursa trades in 100-share board lots
+        "min_price": float(os.environ.get("SCAN_MY_MIN_PRICE", 0.50)),
+        "min_dollar_vol": float(os.environ.get("SCAN_MY_MIN_DOLLAR_VOL", 2_000_000)),
+        "min_adr": float(os.environ.get("SCAN_MY_MIN_ADR", 1.5)),
     },
+    # "US": {"calendar": "NYSE", "indices": ["SPY", "QQQ"], "currency": "$",
+    #        "lot_size": 1, "min_price": 10.0, "min_dollar_vol": 5_000_000,
+    #        "min_adr": 2.5},
 }
 
 CAPS = {"swing": 20, "position": 30, "watchlist": 20, "forming": 15}
@@ -61,32 +63,40 @@ def session_today(calendar_name: str) -> str | None:
     return last.isoformat() if last == today else None
 
 
-def mc_sym(code: str) -> str:
-    """'US.NVDA' -> 'NVDA' so tickers match the existing DB/web format."""
-    return code.split(".", 1)[1] if "." in code else code
+def liquidity_filter(data: dict[str, pd.DataFrame], mcfg: dict) -> dict[str, pd.DataFrame]:
+    """Tradeable subset. Applied AFTER RS ranking, never before (PLAN §3.4)."""
+    out = {}
+    for t, df in data.items():
+        try:
+            price = float(df["Close"].iloc[-1])
+            value = float((df["Close"] * df["Volume"]).iloc[-20:].mean())
+        except Exception:
+            continue
+        if price >= mcfg["min_price"] and value >= mcfg["min_dollar_vol"]:
+            out[t] = df
+    return out
 
 
-def download_batch(tickers: list[str], period: str = "2y", ctx=None) -> dict[str, pd.DataFrame]:
-    """moomoo-backed replacement for the old yfinance bulk download.
+def regime_frame(index_df: pd.DataFrame | None, universe: dict[str, pd.DataFrame]):
+    """The index frame the regime reads: ETF price, EXCHANGE volume.
 
-    Costs 1 kline quota per unique ticker per 7 days. Used for sector ETFs and
-    open journal positions; the main funnel pulls its own history.
+    Phase 0 result (e): Bursa has no raw KLCI index in the vendor catalog, so
+    the KLCI ETF stands in for price. Its own volume is ~700 units/day, which
+    would make distribution days and follow-through volume meaningless. The
+    honest substitute is aggregate exchange turnover — a truer institutional
+    footprint than any single instrument — grafted onto the ETF's OHLC so the
+    ported distribution-day and FTD detectors run unmodified.
     """
-    years = 2 if period == "2y" else 1
-    out: dict[str, pd.DataFrame] = {}
-    own_ctx = ctx is None
-    if own_ctx:
-        cm = mc.quote_ctx()
-        ctx = cm.__enter__()
-    try:
-        for t in tickers:
-            code = t if "." in t else "US." + t
-            df = mc.history(ctx, code, years=years)
-            if df is not None and len(df) >= indicators.MIN_BARS:
-                out[mc_sym(code)] = df
-    finally:
-        if own_ctx:
-            cm.__exit__(None, None, None)
+    if index_df is None or index_df.empty:
+        return None
+    total = None
+    for df in universe.values():
+        v = df["Volume"]
+        total = v if total is None else total.add(v, fill_value=0)
+    if total is None:
+        return index_df
+    out = index_df.copy()
+    out["Volume"] = total.reindex(out.index).ffill().fillna(0)
     return out
 
 
@@ -329,40 +339,38 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
     }
 
 
-def scan_market(market: str, mcfg: dict, ctx=None) -> tuple[list[dict], dict, dict, dict]:
-    """Returns (candidates, regime, ranks, price_data) for the US market.
+def scan_market(market: str, mcfg: dict, conn) -> tuple[list[dict], dict, dict, dict]:
+    """Returns (candidates, regime, ranks, price_data) for one market.
 
-    Data comes from moomoo OpenD. The server-side funnel (screener + snapshot,
-    both quota-FREE) does price/liquidity/52-week filtering and a proxy trend
-    template, so we only spend historical-kline quota on survivors.
-
-    RS CAVEAT: previously RS was a percentile across the whole downloaded
-    universe (~1,800 names) specifically to avoid pre-filter bias. moomoo's
-    kline quota (300 stocks / 7 days) makes that impossible, so RS here is a
-    percentile WITHIN the funnel set. It is a relative sort among already-strong
-    stocks, not a market-wide RS rank — `rs_pool` is stored so the UI can say so.
+    Prices come from the warehouse — no network I/O here at all. RS is a
+    percentile across the WHOLE exchange, computed before the liquidity filter,
+    which is the bias v2 could not avoid on a 300-kline quota. `rs_pool` is
+    stored so the UI can state the pool size honestly.
     """
-    snap = mc.screen_us(ctx)
-    if snap.empty:
-        log.error("[%s] moomoo funnel returned nothing", market)
+    data = warehouse.load_window(conn, market)
+    if not data:
+        log.error("[%s] warehouse returned nothing — was the backfill run?", market)
         return [], {}, {}, {}
 
-    codes = list(snap["code"])
-    log.info("[%s] pulling history for %d funnel survivors", market, len(codes))
-    klines = mc.histories(ctx, codes, years=2)
-    data = {mc_sym(c): df for c, df in klines.items()}
+    index_data = {ix: data[ix] for ix in mcfg["indices"] if ix in data}
+    missing = [ix for ix in mcfg["indices"] if ix not in data]
+    if missing:
+        log.error("[%s] regime instrument(s) missing from warehouse: %s", market, missing)
 
-    index_data = {}
-    for ix in mcfg["indices"]:
-        df = mc.history(ctx, "US." + ix, years=2)
-        if df is not None:
-            index_data[ix] = df
+    # benchmarks are not tradeable candidates
+    universe = {t: df for t, df in data.items() if t not in mcfg["indices"]}
 
-    raw = {t: r for t, df in data.items() if (r := indicators.rs_raw(df)) is not None}
+    # --- RS on the FULL universe, BEFORE any liquidity filter (PLAN §3.4) ---
+    raw = {t: r for t, df in universe.items() if (r := indicators.rs_raw(df)) is not None}
     ranks = indicators.rs_ranks(raw)
-    log.info("[%s] RS ranked %d of %d (funnel pool, not market-wide)",
-             market, len(ranks), len(data))
-    liquid = data
+    log.info("[%s] RS ranked %d of %d — full-universe percentile",
+             market, len(ranks), len(universe))
+
+    liquid = liquidity_filter(universe, mcfg)
+    log.info("[%s] liquidity filter: %d of %d counters tradeable "
+             "(price >= %s%.2f, 20d value >= %s%s)",
+             market, len(liquid), len(universe), mcfg["currency"], mcfg["min_price"],
+             mcfg["currency"], f"{mcfg['min_dollar_vol']:,.0f}")
 
     candidates = []
     for t, df in liquid.items():
@@ -389,111 +397,120 @@ def scan_market(market: str, mcfg: dict, ctx=None) -> tuple[list[dict], dict, di
             capped.append(c)
     log.info("[%s] candidates: %s", market, counts)
 
-    # carry the free snapshot metrics (52w distance, market cap) onto candidates
-    smap = {mc_sym(r["code"]): r for _, r in snap.iterrows()}
+    # 52-week distance, computed from the warehouse rather than a vendor snapshot
     for c in capped:
-        s = smap.get(c["ticker"])
-        if s is not None:
-            c["setup"]["pct_off_52w_high"] = round(float(s["pct_off_high"]), 2)
-            mv = s.get("total_market_val")
-            c["market_cap"] = None if pd.isna(mv) else float(mv)
+        df = liquid.get(c["ticker"])
+        if df is not None and len(df):
+            high52 = float(df["High"].iloc[-252:].max())
+            if high52 > 0:
+                c["setup"]["pct_off_52w_high"] = round(
+                    (high52 - float(df["Close"].iloc[-1])) / high52 * 100, 2)
 
-    regime = market_regime(index_data, mcfg["indices"])
-    # breadth from two FREE screener counts across the liquid universe — the
-    # funnel set is strong by construction, so local breadth would read ~100%
-    regime["breadth"] = mc.market_breadth(ctx)
-    return capped, regime, ranks, {**liquid, **index_data}
+    regime = market_regime({ix: regime_frame(index_data.get(ix), universe)
+                            for ix in mcfg["indices"] if ix in index_data},
+                           mcfg["indices"])
+    # Breadth across the FULL universe, not the candidate set: a board that is
+    # strong by construction would otherwise read ~100% and mean nothing.
+    regime["breadth"] = market_breadth(universe)
+    return capped, regime, ranks, {**universe, **index_data}
 
 
-def _earnings_info(t: str) -> dict | None:
-    """Next earnings date via yfinance; high_risk when within 7 days — a
-    breakout right before earnings can gap straight through the stop."""
+QR_INTERVAL_DAYS = 91          # Bursa reports quarterly
+QR_FILING_DEADLINE_DAYS = 60   # ...and must file within 2 months of quarter end
+
+
+def _earnings_info(dossier: dict | None) -> dict | None:
+    """Estimated next-QR window from Bursa filing rhythm (PLAN §5).
+
+    yfinance supplied a published earnings DATE; Bursa does not pre-announce
+    one, so this is a WINDOW derived from the last filing plus the statutory
+    deadline. It is deliberately labelled `estimated` — a breakout into an
+    unknown-date QR is still risk, and the honest statement is "a report is
+    due around here", never a date we do not have.
+    """
+    quarters = (dossier or {}).get("quarters") or []
+    last = next((q for q in quarters if q.get("announced")), None)
+    if last is None:
+        return None
     try:
-        cal = yf.Ticker(t).calendar
-        dates = (cal or {}).get("Earnings Date") if hasattr(cal, "get") else None
-        if not dates:
-            return None
-        d0 = dates[0]
-        # yfinance returns datetime/Timestamp here more often than date —
-        # (datetime - date) raises TypeError, the bare except swallowed it,
-        # and the "breakout right before earnings" flag silently never fired
-        if hasattr(d0, "date") and not isinstance(d0, dt.date):
-            d0 = d0.date()
-        elif isinstance(d0, dt.datetime):
-            d0 = d0.date()
-        days = (d0 - dt.date.today()).days
-        if days < -1:
-            return None  # stale: last report already passed
-        return {"date": d0.isoformat(), "days_away": days, "high_risk": days <= 7}
-    except Exception:
+        announced = dt.date.fromisoformat(last["announced"])
+        quarter_end = dt.date.fromisoformat(last["quarter_end"]) \
+            if last.get("quarter_end") else announced
+    except (ValueError, TypeError):
         return None
 
+    expected = quarter_end + dt.timedelta(days=QR_INTERVAL_DAYS + QR_FILING_DEADLINE_DAYS)
+    days = (expected - dt.date.today()).days
+    if days < -45:
+        return None   # our estimate is stale; say nothing rather than guess
+    return {"date": expected.isoformat(), "days_away": days,
+            "high_risk": -7 <= days <= 14, "estimated": True,
+            "last_announced": last["announced"]}
 
-def enrich(ctx, conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> None:
-    """Sector/industry (moomoo plates, cached in ticker_meta) + group RS +
-    fundamentals + the moomoo SEPA layer: institutional sponsorship and whale
-    capital flow. US only — Bursa was dropped with the moomoo migration."""
+
+def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> None:
+    """Names + industry groups + fundamentals + street data, all from KLSE
+    Screener. One universe request covers every counter's name and sector;
+    one page request per CANDIDATE covers its filings.
+
+    The moomoo institutional/capital-flow layer is gone with OpenD. Its
+    replacement is the substantial-shareholder feed in the dossier: EPF/KWAP
+    accumulation during a base is the same sponsorship signal, from filings
+    rather than order flow (PLAN §7.1).
+    """
     meta = db.load_ticker_meta(conn)
     fresh = {}
-
-    def _meta_for(t: str) -> dict:
-        """name + industry from moomoo (basicinfo + owner plate).
-
-        get_owner_plate is rate-limited (10 calls / 30s); without the throttle
-        most lookups failed silently and only ~25% of candidates got a sector.
-        """
-        code = "US." + t
-        name = industry = None
-        try:
-            ret, info = ctx.get_stock_basicinfo(market=mm_Market.US, code_list=[code])
-            if ret == RET_OK and len(info):
-                name = info.iloc[0]["name"]
-        except Exception as e:
-            log.debug("basicinfo(%s): %s", t, e)
-        for attempt in range(2):
-            try:
-                time.sleep(3.2)  # plate queries: 10 per 30s
-                ret, plates = ctx.get_owner_plate([code])
-                if ret == RET_OK and len(plates):
-                    ind = plates[plates["plate_type"].astype(str).str.contains(
-                        "INDUSTRY", case=False, na=False)]
-                    row = (ind if len(ind) else plates).iloc[0]
-                    industry = row["plate_name"]
-                    break
-                log.debug("owner_plate(%s) ret=%s %s", t, ret, str(plates)[:80])
-            except Exception as e:
-                log.debug("owner_plate(%s) attempt %d: %s", t, attempt, e)
-        return {"industry": industry, "sector": industry, "name": name}
+    try:
+        table = klse_client.universe_table()
+        for _, r in table.iterrows():
+            m = {"name": r["name"], "industry": r["industry"],
+                 "sector": r["industry"], "shariah": bool(r["shariah"]),
+                 "board": r["board"]}
+            if (meta.get(r["ticker"]) or {}) != m:
+                fresh[r["ticker"]] = m
+            meta[r["ticker"]] = m
+    except Exception as e:
+        log.warning("universe table unavailable (%s) — falling back to cached meta", e)
 
     for c in candidates:
-        t = c["ticker"]
-        m = meta.get(t) or {}
-        if not m.get("name") or not m.get("industry"):
-            m = _meta_for(t)
-            if m.get("name"):
-                fresh[t] = m
-                meta[t] = m
+        m = meta.get(c["ticker"]) or {}
         c["sector"] = m.get("sector")
         c["industry"] = m.get("industry")
         c["name"] = m.get("name")
+        c["setup"]["shariah"] = m.get("shariah")
+        c["setup"]["board"] = m.get("board")
 
     if fresh:
         db.save_ticker_meta(conn, fresh)
 
+    # Group RS spans the FULL ranked universe, not just the board — a group's
+    # median rank is only meaningful against every member (PLAN §4.2).
     group_rs_by_market = {
         mkt: indicators.industry_group_rs(
             ranks, {t: (meta.get(t) or {}).get("industry") for t in ranks})
         for mkt, ranks in ranks_by_market.items()
     }
 
+    session = requests.Session()
     for c in candidates:
-        code = "US." + c["ticker"]
         c["group_rs"] = group_rs_by_market.get(c["market"], {}).get(c.get("industry"))
-        c["news"], c["earnings"] = [], _earnings_info(c["ticker"])
-        c["fundamentals"] = fundamentals.fetch(c["ticker"])
-        # --- the SEPA layer moomoo unlocks (O'Neil institutional sponsorship) ---
-        c["setup"]["institutional"] = mc.institutional(ctx, code)
-        c["setup"]["capital_flow"] = mc.capital_flow(ctx, code)
+        dossier = None
+        try:
+            dossier = klse_client.dossier(klse_client.code_of(c["ticker"]), session=session)
+        except Exception as e:
+            log.info("dossier unavailable for %s: %s", c["ticker"], e)
+        c["fundamentals"] = fundamentals.from_dossier(dossier) if dossier else None
+        c["earnings"] = _earnings_info(dossier)
+        # Headlines carry their source URL so the UI links out instead of
+        # asking the reader to trust an unattributed summary.
+        c["news"] = (dossier or {}).get("news", [])[:5]
+        if dossier:
+            c["setup"]["street"] = {
+                "url": dossier["url"],
+                "announcements": dossier["announcements"][:8],
+                "shareholding": dossier["shareholding"],
+                "dividends": dossier["dividends"][:3],
+            }
         entry = c.get("pivot") or c["price"]
         c["targets"] = reasoning.targets(entry, c["stop"]) if c.get("stop") else {}
         c["reasoning"] = reasoning.build(c)
@@ -508,12 +525,10 @@ def evaluate_open_positions(conn, run_date: str, data: dict) -> None:
                        FROM positions WHERE status='open'""")
         rows = cur.fetchall()
     for pid, ticker, entry, stop, pivot, days_held in rows:
+        # The warehouse holds the whole universe, so an open position is only
+        # absent if it was delisted or suspended — in which case there is no
+        # new bar to evaluate and skipping is correct.
         df = data.get(ticker)
-        if df is None:
-            # download_batch, not raw yf.download: newer yfinance returns
-            # (ticker, field) MultiIndex columns for single tickers, which
-            # blew up exit_signals mid-run — download_batch normalizes it
-            df = download_batch([ticker]).get(ticker)
         if df is None or len(df) < 60:
             continue
         sig = indicators.exit_signals(df, float(entry), float(stop),
@@ -532,7 +547,7 @@ def evaluate_open_positions(conn, run_date: str, data: dict) -> None:
 
 
 def main() -> int:
-    enabled = [m.strip().upper() for m in os.environ.get("SCAN_MARKETS", "US").split(",")]
+    enabled = [m.strip().upper() for m in os.environ.get("SCAN_MARKETS", "MY").split(",")]
     # SCAN_FORCE=1 skips the trading-calendar check — for manual local runs on
     # weekends/holidays; data is simply the latest completed session's
     force = os.environ.get("SCAN_FORCE", "").lower() in ("1", "true", "yes")
@@ -547,34 +562,41 @@ def main() -> int:
     log.info("Scanning markets %s for %s%s", list(active), run_date,
              "  [DRY RUN]" if dry else "")
 
+    conn = db.connect()
+    warehouse.ensure_schema(conn)
+
     all_candidates, regimes, ranks_by_market, all_data = [], {}, {}, {}
-    with mc.quote_ctx() as ctx:
-        log.info("kline quota at start: %s", mc.kline_quota(ctx))
-        for market, mcfg in active.items():
-            cands, regime, ranks, data = scan_market(market, mcfg, ctx)
-            all_candidates += cands
-            regimes[market] = regime
-            ranks_by_market[market] = ranks
-            all_data.update(data)
-
-        if "SPY" not in all_data:
-            log.error("Missing SPY data — aborting to avoid a garbage run.")
+    for market, mcfg in active.items():
+        # Ingest today's session, then REFUSE to scan on stale prices. v1's
+        # Yahoo feed served Bursa a day late for months without anyone noticing,
+        # because the data always existed — existence is not the test.
+        try:
+            report = warehouse.ingest_bulk(conn, market)
+            warehouse.coverage_check(conn, market, report["bar_date"])
+            if not force:
+                warehouse.assert_fresh(conn, market, dt.date.fromisoformat(run_date))
+        except Exception as e:
+            log.error("[%s] aborting: %s", market, e)
+            conn.close()
             return 1
-        all_data.update(download_batch(list(sectors.SECTOR_ETFS), ctx=ctx))
 
-        if dry:
-            log.info("[DRY RUN] %d candidates; skipping enrich/save", len(all_candidates))
-            for c in all_candidates[:12]:
-                log.info("  %-6s %-10s RS %-3s Q %-4s %s",
-                         c["ticker"], c["bucket"], c["rs_rank"], c.get("quality"),
-                         c.get("sector") or "")
-            log.info("kline quota at end: %s", mc.kline_quota(ctx))
-            return 0
+        cands, regime, ranks, data = scan_market(market, mcfg, conn)
+        all_candidates += cands
+        regimes[market] = regime
+        ranks_by_market[market] = ranks
+        all_data.update(data)
 
-        conn = db.connect()
-        db.apply_migrations(conn)
-        enrich(ctx, conn, all_candidates, ranks_by_market)
-        log.info("kline quota after run: %s", mc.kline_quota(ctx))
+    if dry:
+        log.info("[DRY RUN] %d candidates; skipping enrich/save", len(all_candidates))
+        for c in all_candidates[:12]:
+            log.info("  %-10s %-10s RS %-3s Q %-4s %s",
+                     c["ticker"], c["bucket"], c["rs_rank"], c.get("quality"),
+                     c.get("sector") or "")
+        conn.close()
+        return 0
+
+    db.apply_migrations(conn)
+    enrich(conn, all_candidates, ranks_by_market)
 
     # last ~130 daily bars for the dashboard chart
     for c in all_candidates:
@@ -593,9 +615,15 @@ def main() -> int:
         # its own baseline) — lets the chart flag high-volume days honestly
         v50 = df["Volume"].rolling(50).mean().shift(1)
         d = df.iloc[-130:]
+        # Bursa quotes to THREE decimals and a large part of the board trades
+        # under RM1 (0.455, 0.075). Rounding to 2dp as the US build did would
+        # collapse distinct ticks onto the same number and visibly corrupt
+        # pivots, stops and candles for most of the market.
+        dp = 3 if c.get("market") == "MY" else 2
         # RS line: stock/index ratio normalized to 1.0 at the window start —
         # an RS line making new highs BEFORE price is institutional confirmation
-        bench = all_data.get("SPY")
+        bench_ticker = next(iter(MARKETS.get(c.get("market"), {}).get("indices", [])), None)
+        bench = all_data.get(bench_ticker) if bench_ticker else None
         rs_map = {}
         if bench is not None:
             ratio = (df["Close"] / bench["Close"].reindex(df.index).ffill()).iloc[-130:]
@@ -603,22 +631,25 @@ def main() -> int:
             if base and base > 0:
                 rs_map = {i: round(float(v) / base, 4) for i, v in ratio.items() if pd.notna(v)}
         c["candles"] = [
-            {"t": i.strftime("%Y-%m-%d"), "o": round(float(r["Open"]), 2),
-             "h": round(float(r["High"]), 2), "l": round(float(r["Low"]), 2),
-             "c": round(float(r["Close"]), 2), "v": int(r["Volume"]),
-             "m20": round(float(ma20.loc[i]), 2) if pd.notna(ma20.loc[i]) else None,
-             "m50": round(float(ma50.loc[i]), 2) if pd.notna(ma50.loc[i]) else None,
-             "m150": round(float(ma150.loc[i]), 2) if pd.notna(ma150.loc[i]) else None,
-             "m200": round(float(ma200.loc[i]), 2) if pd.notna(ma200.loc[i]) else None,
+            {"t": i.strftime("%Y-%m-%d"), "o": round(float(r["Open"]), dp),
+             "h": round(float(r["High"]), dp), "l": round(float(r["Low"]), dp),
+             "c": round(float(r["Close"]), dp), "v": int(r["Volume"]),
+             "m20": round(float(ma20.loc[i]), dp) if pd.notna(ma20.loc[i]) else None,
+             "m50": round(float(ma50.loc[i]), dp) if pd.notna(ma50.loc[i]) else None,
+             "m150": round(float(ma150.loc[i]), dp) if pd.notna(ma150.loc[i]) else None,
+             "m200": round(float(ma200.loc[i]), dp) if pd.notna(ma200.loc[i]) else None,
              "rs": rs_map.get(i),
-             "bbu": round(float(bb["upper"].loc[i]), 2) if pd.notna(bb["upper"].loc[i]) else None,
-             "bbl": round(float(bb["lower"].loc[i]), 2) if pd.notna(bb["lower"].loc[i]) else None,
+             "bbu": round(float(bb["upper"].loc[i]), dp) if pd.notna(bb["upper"].loc[i]) else None,
+             "bbl": round(float(bb["lower"].loc[i]), dp) if pd.notna(bb["lower"].loc[i]) else None,
              "v50": int(v50.loc[i]) if pd.notna(v50.loc[i]) else None}
             for i, r in d.iterrows()
         ]
 
-    sector_rows = (sectors.sector_rotation(all_data, all_data["SPY"])
-                   if "SPY" in all_data else [])
+    # Sector rotation is ETF-based and Bursa has no sector ETFs, so the MY
+    # equivalent is industry-group RS (§4.2), already computed in enrich().
+    us_bench = all_data.get("SPY")
+    sector_rows = (sectors.sector_rotation(all_data, us_bench)
+                   if us_bench is not None else [])
     sector_news = news.sector_rotation_news(sector_rows, all_candidates)
     log.info("Sector news: %d sectors with headlines", len(sector_news))
 

@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 
 BASE = "https://www.klsescreener.com"
 STOCK_PATH = "/v2/stocks/view/{code}"
+UNIVERSE_PATH = "/v2/screener/quote_results"
 TIMEOUT = 45
 # Measured 2026-07-22: ~5 requests at 1.5s spacing trips a burst limit that
 # returns HTTP 200 with the tables stripped out; 10s spacing ran clean. 8s is
@@ -149,6 +150,58 @@ def fetch(code: str, session: requests.Session | None = None) -> str:
             if attempt < len(TIMEOUT_BACKOFF):
                 time.sleep(2 + attempt * 2)
     raise ParseFailure(f"{code}: fetch failed — {last}")
+
+
+def universe_table(session: requests.Session | None = None) -> pd.DataFrame:
+    """Every Bursa counter's name and sector in ONE request.
+
+    Columns: ticker (internal .KL), name, category. The stock page carries no
+    sector classification, and industry-group RS (PLAN §4.2 — median member
+    rank per group, >=3 members) needs one for every counter. Fetching this
+    list once per scan costs a single request instead of 1,069.
+
+    Codes are read as STRINGS: Bursa codes carry meaningful leading zeros
+    ('0138' is Zetrix, '03046' is a LEAP counter) and letting pandas infer
+    them as integers would silently rewrite the ticker namespace.
+    """
+    s = session or requests.Session()
+    s.headers.update(BROWSER_HEADERS)
+    r = s.post(BASE + UNIVERSE_PATH, data={"getquote": "1"}, timeout=TIMEOUT)
+    r.raise_for_status()
+    if _throttled(r.text):
+        raise ParseFailure("universe table: throttled by source")
+
+    tables = pd.read_html(StringIO(r.text), converters={"Code": str})
+    hit = next((t for t in tables if {"Name", "Code", "Category"} <= set(t.columns)), None)
+    if hit is None:
+        raise ParseFailure("universe table: no table carrying Name/Code/Category")
+
+    raw_name = hit["Name"].astype(str).str.strip()
+    cat = hit["Category"].astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+
+    # "Banking Financial Services, Main Market" packs industry, sector and
+    # LISTING BOARD into one string. The board must come off before grouping,
+    # or the same industry splits into separate ACE and Main groups and each
+    # falls under the 3-member minimum that industry-group RS requires.
+    board = cat.str.extract(r",\s*([^,]+)$", expand=False).fillna("")
+    group = cat.str.replace(r",\s*[^,]+$", "", regex=True).str.strip()
+    # where industry equals sector the listing repeats it ("Property Property");
+    # collapse so the group label reads sanely in the UI
+    group = group.str.replace(r"^(.+?)\s+\1$", r"\1", regex=True)
+
+    out = pd.DataFrame({
+        "ticker": hit["Code"].astype(str).str.strip() + ".KL",
+        # '[s]' marks Shariah compliance — carried as a flag rather than
+        # discarded, since it is a real screen for many Malaysian investors.
+        "name": raw_name.str.replace(r"\s*\[s\]\s*$", "", regex=True).str.strip(),
+        "shariah": raw_name.str.contains(r"\[s\]", regex=True),
+        "industry": group.where(group.str.len() > 1, None),
+        "board": board.str.replace(" Market", "", regex=False),
+    })
+    out = out[out["ticker"].str[0].str.isdigit()].drop_duplicates("ticker")
+    log.info("universe table: %d counters, %d industry groups, boards=%s",
+             len(out), out["industry"].nunique(), sorted(out["board"].unique())[:6])
+    return out.reset_index(drop=True)
 
 
 def _throttled(html: str) -> bool:

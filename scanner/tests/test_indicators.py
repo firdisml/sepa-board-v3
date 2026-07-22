@@ -557,10 +557,24 @@ class TestEarlyDetectionAndPatterns:
         assert out["narrative"] and "volume" in out
         assert out["volume"]["verdict"]
 
-    def test_klse_universe_loads(self):
-        from scanner import universe
-        t = universe.fetch_klse()
-        assert len(t) > 50 and all(x.endswith(".KL") for x in t)
+    def test_klse_ticker_namespace(self):
+        """v2 scraped the KLSE universe from a text file via universe.py; v3
+        gets it from the EODHD directory, so this now guards the mapping that
+        keeps the DB/web ticker namespace stable across the vendor boundary.
+
+        The alias rule is load-bearing: EODHD also lists HEXTAR/HLIND/ICON/KLCC,
+        which duplicate live numeric listings and stopped updating, and every
+        duplicate shifts the RS percentile that rule 8 gates on.
+        """
+        from scanner import eodhd_client as eod
+
+        assert eod.to_vendor("1155.KL") == "1155.KLSE"
+        assert eod.to_internal("1155.KLSE", "KLSE") == "1155.KL"
+        assert eod.to_vendor(eod.to_internal("0138.KLSE", "KLSE")) == "0138.KLSE"
+        # a letter SUFFIX is a real Bursa code (stapled security), a letter
+        # PREFIX is a vendor alias
+        assert eod.to_vendor("5235SS.KL") == "5235SS.KLSE"
+        assert "5235SS.KL"[0].isdigit() and not "HEXTAR.KL"[0].isdigit()
 
 
 class TestScanFixes:

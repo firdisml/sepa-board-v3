@@ -31,6 +31,13 @@ WINDOW_DAYS = 420          # trading days retained per ticker
 MIN_BARS_FOR_SCAN = 200    # below this a ticker cannot be trend-templated
 MAX_STALE_SESSIONS = 3     # a ticker silent longer than this is suspended or dead
 
+# Regime instruments. These are NOT common stock, so `symbols()` filters them
+# out and a universe backfill would silently omit them — leaving market_regime
+# with nothing to read and the exposure ladder dead. MY uses the KLCI ETF for
+# PRICE only; its volume (~700 units/day) is unusable, so distribution days
+# come from aggregate exchange turnover instead (PLAN §12 Phase 0 result (e)).
+BENCHMARKS = {"MY": ["0820EA.KL"], "US": ["SPY", "QQQ"]}
+
 DDL = """
 CREATE TABLE IF NOT EXISTS candles (
     ticker text    NOT NULL,
@@ -245,6 +252,9 @@ def purge_unlisted(conn, market: str, directory: set[str] | None = None) -> int:
         directory = set(eodhd_symbols(market)["ticker"])
     if not directory:
         return 0   # never purge on an empty directory — that would wipe the warehouse
+    # benchmarks are absent from the common-stock directory by definition;
+    # without this the purge quietly deletes the regime instrument
+    directory = directory | set(BENCHMARKS.get(market, []))
     op = "LIKE" if market == "MY" else "NOT LIKE"
     with conn.cursor() as cur:
         cur.execute(f"SELECT DISTINCT ticker FROM candles WHERE ticker {op} %s", ("%.KL",))
@@ -294,6 +304,10 @@ def backfill(conn, market: str, years: int = 2, tickers: list[str] | None = None
     """
     if tickers is None:
         tickers = list(eodhd_symbols(market)["ticker"])
+    # benchmarks are not common stock and would otherwise never be seeded
+    for b in BENCHMARKS.get(market, []):
+        if b not in tickers:
+            tickers.append(b)
     ok = failed = bars = 0
     for i, t in enumerate(tickers, 1):
         try:
