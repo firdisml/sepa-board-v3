@@ -215,6 +215,23 @@ def symbols(exchange: str, include_delisted: bool = True) -> pd.DataFrame:
         "type": df.get("Type", pd.Series(dtype=str)).astype(str),
         "delisted": df["delisted"].astype(bool),
     }).drop_duplicates(subset=["ticker"], keep="first")
+
+    if exchange == "KLSE":
+        # Bursa codes always START numeric (a letter SUFFIX is legitimate —
+        # 5235SS is KLCC's stapled security). EODHD additionally carries legacy
+        # ALPHABETIC aliases — HEXTAR, HLIND, ICON, KLCC — that duplicate live
+        # numeric listings and stopped updating on 2026-07-17. Verified pairs:
+        # HEXTAR/5151, HLIND/3301, ICON/5255, KLCC/5235SS.
+        # Left in they are phantom tickers in the RS PERCENTILE pool, and
+        # RS rank >= 70 is a Trend Template gate — so every rank shifts and
+        # some counters cross the gate that should not. They would also break
+        # klse_client, which needs a numeric code to build its URL.
+        alias = out[~out["ticker"].str[0].str.isdigit()]
+        if len(alias):
+            log.info("KLSE: dropped %d non-numeric alias symbols: %s",
+                     len(alias), sorted(alias["ticker"])[:8])
+            out = out[out["ticker"].str[0].str.isdigit()]
+
     log.info("symbols %s: %d common stocks (%d delisted)",
              exchange, len(out), int(out["delisted"].sum()))
     return out.reset_index(drop=True)

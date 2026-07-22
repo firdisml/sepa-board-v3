@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 
 WINDOW_DAYS = 420          # trading days retained per ticker
 MIN_BARS_FOR_SCAN = 200    # below this a ticker cannot be trend-templated
+MAX_STALE_SESSIONS = 3     # a ticker silent longer than this is suspended or dead
 
 DDL = """
 CREATE TABLE IF NOT EXISTS candles (
@@ -129,11 +130,20 @@ def assert_fresh(conn, market: str, expected_session: dt.date) -> None:
 
 # ---------------------------------------------------------------- read
 
-def load_window(conn, market: str, min_bars: int = MIN_BARS_FOR_SCAN) -> dict[str, pd.DataFrame]:
+def load_window(conn, market: str, min_bars: int = MIN_BARS_FOR_SCAN,
+                max_stale_sessions: int = MAX_STALE_SESSIONS) -> dict[str, pd.DataFrame]:
     """Whole-universe read -> {ticker: yfinance-shaped DataFrame}.
 
     Identical shape to v2's `download_batch` return value, so every ported
     indicator, pattern and backtest routine runs unmodified.
+
+    STALENESS: a ticker must have traded within the last `max_stale_sessions`
+    sessions to be returned. This excludes suspended counters (1368.KL sat 9
+    sessions behind) and any vendor alias that quietly stops updating — both
+    would otherwise be scanned at their frozen price and published as a live
+    board entry. The default of 3 is deliberate: the scan runs BEFORE the
+    exchange session is finalised, so a thin counter that simply did not trade
+    today legitimately has yesterday's bar as its latest.
     """
     # `.KL` is the only suffix in the internal namespace, so it partitions the
     # two markets exactly — and per-market calendars must never mix inside one
@@ -141,9 +151,17 @@ def load_window(conn, market: str, min_bars: int = MIN_BARS_FOR_SCAN) -> dict[st
     where = "ticker LIKE %s" if market == "MY" else "ticker NOT LIKE %s"
     with conn.cursor() as cur:
         cur.execute(
-            f"""SELECT ticker, d, o, h, l, c, v FROM candles
-                WHERE {where} ORDER BY ticker, d""",
-            ("%.KL",),
+            f"""WITH recent AS (
+                    SELECT DISTINCT d FROM candles WHERE {where}
+                    ORDER BY d DESC LIMIT %s
+                ), live AS (
+                    SELECT DISTINCT ticker FROM candles
+                    WHERE {where} AND d >= (SELECT min(d) FROM recent)
+                )
+                SELECT ticker, d, o, h, l, c, v FROM candles
+                WHERE {where} AND ticker IN (SELECT ticker FROM live)
+                ORDER BY ticker, d""",
+            ("%.KL", max_stale_sessions, "%.KL", "%.KL"),
         )
         rows = cur.fetchall()
 
@@ -177,6 +195,67 @@ def size_report(conn) -> dict:
 
 
 # ---------------------------------------------------------------- maintain
+
+def coverage_check(conn, market: str, bar_date) -> dict:
+    """Compare this session's participation against the recent norm.
+
+    COUNTS ONLY TRADED ROWS (v > 0). EODHD finalises a KLSE session by adding
+    zero-volume placeholder rows for counters that did not trade — ~140 of
+    them, hours after the traded rows land. Comparing TOTAL rows against a
+    finalised day therefore reports a phantom 13% collapse every single
+    evening, which is exactly the false alarm that would train us to ignore
+    the guard PLAN §12 asks for ("a drop >2% turns the scan log loud").
+    """
+    op = "LIKE" if market == "MY" else "NOT LIKE"   # `.KL` partitions the markets
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT count(*) FILTER (WHERE v > 0) FROM candles
+                WHERE ticker {op} %s AND d = %s""",
+            ("%.KL", bar_date))
+        traded = cur.fetchone()[0] or 0
+        cur.execute(
+            f"""SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY n) FROM (
+                    SELECT d, count(*) FILTER (WHERE v > 0) n FROM candles
+                    WHERE ticker {op} %s AND d < %s
+                    GROUP BY d ORDER BY d DESC LIMIT 10) s""",
+            ("%.KL", bar_date))
+        median = cur.fetchone()[0]
+
+    norm = float(median) if median else 0.0
+    drop_pct = round((1 - traded / norm) * 100, 1) if norm else 0.0
+    report = {"bar_date": bar_date, "traded": traded, "recent_median": norm,
+              "drop_pct": drop_pct}
+    if norm and drop_pct > 2.0:
+        log.warning("COVERAGE DROP %s: %d counters traded vs median %.0f (-%.1f%%) "
+                    "— missing counters must be visible, never silently skipped",
+                    market, traded, norm, drop_pct)
+    else:
+        log.info("coverage %s: %d traded (median %.0f)", market, traded, norm)
+    return report
+
+
+def purge_unlisted(conn, market: str, directory: set[str] | None = None) -> int:
+    """Drop warehouse tickers the exchange directory no longer carries.
+
+    Catches vendor aliases that freeze: EODHD's HEXTAR/HLIND/ICON/KLCC
+    duplicated live numeric listings and stopped updating on 2026-07-17, so
+    each was a phantom entry in the RS percentile pool.
+    """
+    if directory is None:
+        directory = set(eodhd_symbols(market)["ticker"])
+    if not directory:
+        return 0   # never purge on an empty directory — that would wipe the warehouse
+    op = "LIKE" if market == "MY" else "NOT LIKE"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT DISTINCT ticker FROM candles WHERE ticker {op} %s", ("%.KL",))
+        have = {r[0] for r in cur.fetchall()}
+        gone = sorted(have - directory)
+        if gone:
+            cur.execute("DELETE FROM candles WHERE ticker = ANY(%s)", (gone,))
+            log.info("purged %d unlisted tickers: %s", len(gone), gone[:10])
+    conn.commit()
+    return len(gone)
+
 
 def prune(conn, window_days: int = WINDOW_DAYS) -> int:
     """Drop bars older than the window. Calendar days deliberately overshoot
