@@ -1,13 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
+import { cash, ccy, lotSize, money } from "@/lib/format";
 
 /* One-input position sizing: enter capital ONCE (remembered on this device),
    risk % is set automatically by the market regime's exposure ladder
    (green 1% / yellow 0.5% / red = no new entries), entry/stop come from the
    board. The "adjust" toggle exposes the old manual fields for edge cases. */
 export default function Calculator({ entry: entry0, stop: stop0, market, exposure, light }) {
-  const ccy = market === "MY" ? "RM" : "$";
-  const lot = market === "MY" ? 100 : 1;
+  const lot = lotSize(market);
   const [equity, setEquity] = useState("");
   const [adjust, setAdjust] = useState(false);
   const [entry, setEntry] = useState(entry0 || 0);
@@ -43,7 +43,10 @@ export default function Calculator({ entry: entry0, stop: stop0, market, exposur
   const posPct = eq > 0 ? (posVal / eq) * 100 : 0;
   const stopPct = e > 0 ? (rps / e) * 100 : 0;
   const t2 = e + 2 * rps, t3 = e + 3 * rps;
-  const f = (v) => ccy + Number(v).toFixed(2);
+  // prices at market precision (a 0.605 stop and a 0.610 pivot must not both
+  // render as 0.61); cash amounts stay at 2dp, since sub-cent totals are noise
+  const f = (v) => money(v, market);
+  const fc = (v) => cash(v, market);
   const regimeNote = { green: "green regime — full size", yellow: "yellow regime — half size",
                        red: "red regime — no new entries" }[light] || "regime unknown — default 1%";
 
@@ -51,7 +54,7 @@ export default function Calculator({ entry: entry0, stop: stop0, market, exposur
     <div>
       <div className="calc-inputs" style={{ gridTemplateColumns: "1fr" }}>
         <div>
-          <label>Your capital ({ccy}) — remembered on this device</label>
+          <label>Your capital ({ccy(market)}) — remembered on this device</label>
           <input type="number" placeholder="e.g. 50000" value={equity}
                  onChange={(x) => saveEquity(x.target.value)} />
         </div>
@@ -73,7 +76,7 @@ export default function Calculator({ entry: entry0, stop: stop0, market, exposur
             <span className="v">{f(e)} / {f(s)} (−{stopPct.toFixed(1)}%)</span></div>
           {stopPct > 8 && <div className="calc-row"><span className="k" style={{ color: "var(--red)" }}>
             Stop wider than 8% — outside Minervini's max. Tighten it or skip the trade.</span></div>}
-          <div className="calc-row"><span className="k">Risk amount</span><span className="v">{f(riskAmt)}</span></div>
+          <div className="calc-row"><span className="k">Risk amount</span><span className="v">{fc(riskAmt)}</span></div>
           <div className="calc-row"><span className="k">{lot > 1 ? "Shares (lots of 100)" : "Shares"}</span>
             <span className={"v" + (capped ? " warn-v" : "")}>
               {shares.toLocaleString()}{lot > 1 ? ` (${shares / lot} lots)` : ""}{capped ? " · capped 25%" : ""}
@@ -81,7 +84,7 @@ export default function Calculator({ entry: entry0, stop: stop0, market, exposur
           {shares === 0 && <div className="calc-row"><span className="k" style={{ color: "var(--amber)" }}>
             Position rounds to zero — capital too small for this counter at {riskPct}% risk.</span></div>}
           <div className="calc-row"><span className="k">Position size</span>
-            <span className="v">{f(posVal)} · {Math.min(posPct, 25).toFixed(1)}% of capital</span></div>
+            <span className="v">{fc(posVal)} · {Math.min(posPct, 25).toFixed(1)}% of capital</span></div>
           <div className="calc-row"><span className="k">At 2R / 3R you make</span>
             <span className="v" style={{ color: "var(--green)" }}>+{f(2 * riskAmt)} / +{f(3 * riskAmt)}</span></div>
           <div className="calc-row"><span className="k">Target prices 2R / 3R</span><span className="v">{f(t2)} / {f(t3)}</span></div>

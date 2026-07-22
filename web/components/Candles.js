@@ -1,4 +1,5 @@
 "use client";
+import { money } from "@/lib/format";
 
 export default function Candles({ candles, pivot, market, levels, markers, swings, contractions, bases }) {
   const data = (candles || []).slice(-120);
@@ -16,7 +17,8 @@ export default function Candles({ candles, pivot, market, levels, markers, swing
   const y = (v) => ((hi - v) / (hi - lo)) * (H - VB - 8) + 4;
   const bw = W / n;
   const vmax = Math.max(...data.map((b) => b.v || 0), 1);
-  const ccy = "$";
+  // `market` was already a prop but the label was hardcoded to USD
+  const lbl = (v) => money(v, market);
 
   // date -> bar index, for everything that anchors to a day
   const xi = new Map(data.map((b, i) => [b.t, i]));
@@ -110,7 +112,7 @@ export default function Candles({ candles, pivot, market, levels, markers, swing
         <>
           <line x1="0" x2={W} y1={y(pivot)} y2={y(pivot)} stroke="var(--amber)" strokeDasharray="5 4" strokeWidth="1.2" />
           <text x={W - 4} y={y(pivot) - 5} fill="var(--amber)" fontSize="10" textAnchor="end" fontFamily="var(--mono)">
-            pivot {ccy}{Number(pivot).toFixed(2)}
+            pivot {lbl(pivot)}
           </text>
         </>
       )}
@@ -118,7 +120,7 @@ export default function Candles({ candles, pivot, market, levels, markers, swing
         <g key={"lvl" + i}>
           <line x1="0" x2={W} y1={y(l.price)} y2={y(l.price)} stroke={l.color} strokeDasharray="2 4" strokeWidth="1" opacity="0.9" />
           <text x={4} y={y(l.price) - 4} fill={l.color} fontSize="9.5" fontFamily="var(--mono)">
-            {l.label} {ccy}{Number(l.price).toFixed(2)}
+            {l.label} {lbl(l.price)}
           </text>
         </g>
       ))}

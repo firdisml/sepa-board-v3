@@ -1,8 +1,11 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { money } from "@/lib/format";
 
-const fmt = (v) => "$" + Number(v).toFixed(Number(v) >= 1 ? 2 : 3);
+// was: "$" + toFixed(v >= 1 ? 2 : 3) — hardcoded USD, and it discarded the
+// market argument the call site was already passing
+const fmt = (v, market) => money(v, market);
 
 // filters survive stock-page detours via sessionStorage (per-tab; a fresh tab
 // starts clean). localStorage would resurrect stale filters days later and
