@@ -1,7 +1,8 @@
-yfinance>=0.2.50  # fundamentals + earnings dates only; prices come from EODHD
 pandas>=2.2
 numpy>=1.26
 requests>=2.32
+beautifulsoup4>=4.12  # klse_client: the announcement/news lists are <li>, not tables
+lxml>=5.0             # pandas.read_html parser
 psycopg[binary]>=3.2
 pandas_market_calendars>=4.4
 TA-Lib>=0.6

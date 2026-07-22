@@ -10,7 +10,16 @@ repo is the source of all ported code — read it before writing anything new.
 
 ## 1. Charter
 
-A nightly end-of-day stock screener for the **US and Bursa Malaysia** markets
+> **SCOPE CHANGE (2026-07-22, owner decision): v3.0 is BURSA MALAYSIA ONLY.**
+> US is parked, not deleted — the engine stays multi-market (market configs),
+> so US reactivation later is configuration + a second cron, not a rebuild.
+> Wherever this document says "US + MY", read "MY now, US later".
+> Second decision: **Apify is dropped**; MY fundamentals + street data come
+> from i3investor (code-parsed tables → mechanical grade; Gemini interprets).
+> Prices remain EODHD (validated live 2026-07-22). yfinance is REMOVED from
+> the stack entirely — its last jobs (US fundamentals/earnings) left with US.
+
+A nightly end-of-day stock screener for the **Bursa Malaysia** market (US later)
 implementing **Mark Minervini's SEPA methodology** (Trend Template, VCP, buy
 points, risk-first position sizing, sell rules) with O'Neil/CANSLIM context
 (RS ranking, industry groups, market regime, fundamentals), a set of
@@ -49,17 +58,18 @@ Dark trading-desk dashboard. Educational tool, not financial advice.
 - No multi-user product features (single password gate is fine).
 
 ### 1.3 Budget (DECIDED — supersedes the old $30 figure): RM150/month ALL-IN hard cap
-EODHD ~RM82 (owner-verified card price) + Gemini RM68 cap (expected burn
-~RM60–65, see §13.1 — pro-class Tier-A notes affordable from day one) +
-everything else free tier. After the validation month, switch EODHD to
-annual billing (~RM60–66/month equivalent); the freed amount becomes
-buffer / the portfolio-coach fund, NOT new spending.
+EODHD ~RM82 (owner-verified card price; All-World is the tier that carries
+KLSE — no cheaper MY-only plan exists) + Gemini RM68 cap. MY-only scope
+shrinks the AI load (~30-45 picks/night vs 90): expected burn ~RM30–45
+with pro-class Tier-A notes from day one — roughly RM25/month of natural
+headroom. After the validation month, switch EODHD to annual billing
+(~RM60–66/month equivalent); freed money = buffer / portfolio-coach fund,
+NOT new spending. Apify: removed. yfinance: removed.
 
 | Line | Vendor | Est. |
 |---|---|---|
-| Prices US+MY (EOD bulk) | EODHD "All-World" plan | ~$21 (€19.99; check annual discount) |
-| US fundamentals | yfinance (free, unofficial) | $0 |
-| MY fundamentals | yfinance where present; grade None where absent (§5) | $0 |
+| Prices MY (EOD bulk; US later, same plan) | EODHD "All-World" plan | ~RM82 |
+| MY fundamentals + street data | i3investor (code-parsed, free) | RM0 |
 | AI (notes/briefs/review + search) | Gemini API (search grounding free ≤5k/mo) | ~$7–9 |
 | Compute | GitHub Actions (public/private repo minutes) + Supabase free + Vercel free | $0 |
 
@@ -73,11 +83,11 @@ buffer / the portfolio-coach fund, NOT new spending.
                                         ▼
    EODHD bulk EOD ──2 calls/night──► Postgres candle WAREHOUSE (Supabase)
                                         │
-       ┌────────────────────────────────┼───────────────────────────────┐
+       ┌────────────────────────────────┬───────────────────────────────┐
        ▼                                ▼                               ▼
-  10:30 UTC cron (Actions)        22:00 UTC cron (Actions)        on demand
-  scan MY (Bursa closed 09:00)    scan US (closed 20/21:00)       backtests
-       │                                │                               │
+  12:30 UTC cron (Actions)        i3investor fetch (in-scan)      on demand
+  scan MY (Bursa closed 09:00)    fundamentals + street pages     backtests
+       │   [US cron parked — reactivation = config + cron]              │
        └──────── same engine: RS → Trend Template → VCP → tactics → buckets
                                         │
                               scan_runs + candidates (Postgres)
@@ -110,18 +120,18 @@ new-repo/
     reasoning.py         # ported VERBATIM
     performance.py       # ported VERBATIM (receipts)
     backtest.py          # ported + full-universe mode + bootstrap (§9)
-    fundamentals.py      # ported VERBATIM (yfinance; US-strong, MY-sparse)
+    fundamentals.py      # rewritten thin: grade math kept, source = i3_client
+    i3_client.py         # NEW — i3investor fetch+parse (fundamentals + street pages)
     analyst.py           # ported VERBATIM (Gemini)
     reviewer.py          # ported VERBATIM
-    news.py              # ported (yfinance headlines; AI search supersedes)
+    news.py              # slimmed: Gemini search grounding is the news source
     sectors.py           # ported VERBATIM
     db.py                # ported + warehouse DDL
-    tests/               # port ALL v2 tests EXCEPT test_bursa_fundamentals.py
-                         # (its module is dropped, see §5); they encode fixed bugs
+    tests/               # port ALL v2 tests; they encode fixed bugs
   db/schema.sql + migrations/
   web/                   # ported Next.js 14 app, Bursa UI restored
-  .github/workflows/     # scan-my.yml, scan-us.yml, ai-analyst.yml,
-                         # backtest.yml, weekly-review.yml
+  .github/workflows/     # scan-my.yml, ai-analyst.yml, backtest.yml,
+                         # weekly-review.yml  (scan-us.yml parked for later)
   docs/THIS-PLAN.md
 ```
 
@@ -284,25 +294,36 @@ are labeled "already cleared — confirmation, not an entry."
 ---
 
 ## 5. Fundamentals (the E in SEPA) — code computes, AI reads
+### SOURCE (DECIDED 2026-07-22): i3investor, replacing Apify AND yfinance
 
-- **US:** yfinance quarterly income statements + profile. YoY revenue/NI/EPS
-  growth (None on negative/zero base — never fake a %), prior-quarter
-  growth, acceleration flag, net-margin trend, ROE, debt/equity, last EPS
-  surprise. Mechanical **A–E grade**: EPS ≥25%, revenue ≥20%, accelerating,
-  margin expanding, ROE ≥17% — graded only on boxes with data; mostly-empty
-  profile ⇒ grade None (don't punish missing data).
-- **MY: no dedicated fundamentals vendor.** yfinance where it has the
-  counter; where it doesn't, `grade` stays None and the panel says so — the
-  ported code already handles sparse profiles honestly (never punish missing
-  data, never fake a number). The v2 Apify pipeline is **dropped**: not
-  ported, no `APIFY_TOKEN`, no weekly workflow, no `bursa_fundamentals`
-  table, and `test_bursa_fundamentals.py` is not ported. Rationale: one
-  fewer vendor and single-maintainer actor for RM0 saved; the §7.1 street
-  module already reads Bursa quarterlies from filings-derived pages, so if
-  MY fundamentals coverage proves inadequate the fix belongs there, decided
-  on evidence in Phase 5 — not on a second vendor now.
+One module (`scanner/i3_client.py`, shared with the street skill §7.1)
+fetches i3investor pages and parses their HTML tables DETERMINISTICALLY
+(requests + pandas.read_html — probe 2026-07-18 confirmed server-rendered
+HTML, no JS wall). Gemini NEVER parses fundamentals — parsed numbers feed
+the mechanical grade; Gemini only interprets them (core value #2).
+
+- From `financial-quarter/{code}` (8+ quarters) + `financial-annual`:
+  YoY revenue/NP/EPS growth (None on negative/zero base — never fake a %),
+  prior-quarter growth, acceleration flag, margin trend. From `overview`:
+  ROE, PE, NTA, DY where present. Mechanical **A–E grade**: EPS ≥25%,
+  revenue ≥20%, accelerating, margin expanding, ROE ≥17% — graded only on
+  boxes with data; mostly-empty ⇒ grade None (don't punish missing data).
+- Cache: `bursa_fundamentals(ticker, data, fetched_at)` (keep the v2 table
+  shape); refresh a counter when cache >7 days old AND it's on the board,
+  or when the announcements page shows a new QR filing. Nightly fetch
+  volume stays polite: board candidates only (~30–45), cache-first,
+  throttled sequential.
+- Failure honesty: parse failure ⇒ log + grade None + "fundamentals
+  unavailable tonight" on the stock page; never guess, never serve >60-day
+  stale as current (banner the age).
+- Earnings-risk warning (was yfinance's job): derive from i3investor —
+  last QR date + Bursa's quarterly reporting deadlines ⇒ expected next-QR
+  window; announcements page confirms actual filing. "QR window open" is
+  the new warning flag.
 - Display: screener NI-YoY column (▲ when accelerating), stock-page panel,
   grade chip; feeds AI payloads.
+- (US later: when US reactivates, its fundamentals source is a fresh
+  decision — yfinance is not automatically re-admitted.)
 
 ---
 
@@ -363,7 +384,22 @@ are labeled "already cleared — confirmation, not an entry."
 
 **Division of labor: CODE fetches and parses; AI only synthesizes.** Fetch
 pages server-side (requests + pandas.read_html; NOT model url_context — 10×
-cheaper, vendor-neutral, deterministic). Module `scanner/street.py`.
+cheaper, vendor-neutral, deterministic). Module: `scanner/i3_client.py`
+(shared with §5 fundamentals).
+
+**URL construction is deterministic — no search/discovery step exists.**
+Every page is `https://klse.i3investor.com/web/stock/{page}/{code}` where
+`{code}` is the counter's Bursa code (e.g. 4456) and `{page}` ∈ {overview,
+analysis-price-target, insider, announcement, financial-quarter,
+financial-annual, dividend}. The whole skill is one function:
+`dossier(code) -> dict` — seven throttled fetches (cache-first), parsed
+tables, one compact JSON (~2-3k tokens) into the Tier-A prompt.
+
+**Model url-reading (Gemini url_context) is garnish, never the pipeline:**
+permitted only as a targeted extra on Tier-A counters whose PARSED dossier
+proves thin, because raw pages cost ~15× the tokens and their numbers
+arrive unparseable for grades/charts. Default path is always
+code-parse → compact JSON → Gemini.
 
 Per MY counter, cap `STREET_MAX`=10/night, **prioritized by trade-readiness**
 (the counters where street data can change tomorrow's decision), in order:
@@ -391,8 +427,7 @@ Parse from klse.i3investor.com/web/stock/*/{code}:
    inside the base), hazard flags (placement = dilution incoming; UMA =
    operator smell feeding the goreng filter), and corporate-action timing.
 4. `financial-quarter`: last 8 quarters revenue / net profit / EPS
-   (the primary MY quarterly read now that Apify is dropped — still
-   commentary-only per the wall below). Cache 7 days.
+   (THE fundamentals source, see §5). Cache 7 days.
 5. `financial-annual` (or 5y summary): 5-year revenue / net profit / EPS
    trend — is the quarterly acceleration a blip or an inflection on a
    multi-year base? Cache 30 days.
@@ -518,10 +553,7 @@ Port v2 `schema.sql` + migrations 001–016, then add:
 vcp/setup/patterns/levels/candles/fundamentals/ai_note jsonb), sector_ranks,
 signal_outcomes (UNIQUE signal_date+ticker+signal_type), backtests,
 positions + position_signals (journal, UI still TODO), watchlist, settings,
-ticker_meta, ai_reviews. Migration 016 (`bursa_fundamentals`) is NOT ported —
-the table and its db.py cache functions die with Apify (§5). Port 001–015,
-skipping the two absent numbers (010, 011) exactly as v2 does.
-Migrations auto-applied by the
+ticker_meta, bursa_fundamentals, ai_reviews. Migrations auto-applied by the
 scanner on every run (IF NOT EXISTS style; failures abort loudly).
 
 ---
@@ -530,11 +562,12 @@ scanner on every run (IF NOT EXISTS style; failures abort loudly).
 
 | Workflow | Trigger | Notes |
 |---|---|---|
-| scan-my.yml | cron `30 12 * * 1-5` + dispatch(force) | Bursa closes 09:00 UTC; EODHD's documented update window is close +2–3h (~11:00–12:00 UTC) — cron at 12:30 gives margin; board still ready 8:30pm MYT same evening. Phase 0 measures the ACTUAL availability time; tighten the cron if it's reliably earlier |
-| scan-us.yml | cron `0 22 * * 1-5` + dispatch(force) | US closes 20/21:00 UTC (DST); EODHD updates NYSE/NASDAQ ~15 min after close — ample margin |
-| ai-analyst.yml | workflow_run on BOTH scans (success) + dispatch | per-run: analyze the latest scan; 60-min timeout |
-| backtest.yml | workflow_run on scan-us success + dispatch(tickers/markets/strategy/years/risk/label) | auto rows labeled `nightly YYYY-MM-DD`, pruned to 30 |
+| scan-my.yml | cron `30 12 * * 1-5` + dispatch(force) | Bursa closes 09:00 UTC; EODHD documented window close +2–3h — live probe 2026-07-22 showed fresh at 11:40 UTC; cron 12:30 has margin, board ready 8:30pm MYT same evening. THE only nightly scan in v3.0 (US parked) |
+| ai-analyst.yml | workflow_run on scan-my (success) + dispatch | 60-min timeout; MY-only load ~30-45 notes |
+| backtest.yml | workflow_run on scan-my success + dispatch(tickers/strategy/years/risk/label) | MY-only; auto rows labeled `nightly YYYY-MM-DD`, pruned to 30 |
 | weekly-review.yml | cron `0 1 * * 0` + dispatch | |
+| (parked) scan-us.yml | — | reactivation = add this cron `0 22 * * 1-5` + US market config; nothing else |
+| (removed) bursa-fundamentals.yml | — | Apify dropped; fundamentals fetched by scan-my via i3_client (§5) |
 
 **11.1 Secrets:** `DATABASE_URL` (Supabase session pooler, port 5432),
 `EODHD_API_TOKEN`, `GEMINI_API_KEY`; Vercel env:
@@ -685,8 +718,8 @@ makes AI output resemble a signal.
 | Risk | Mitigation |
 |---|---|
 | EODHD MY data quality (gaps/late bulk) | Phase 0 validation; hard-fail on missing bulk; parallel-run week |
-| yfinance breaks (unofficial API) | isolated to fundamentals+earnings; degrade gracefully (grade None) |
-| MY fundamentals thin without Apify | accepted: grade None shown honestly, never faked; revisit via §7.1 street quarterlies in Phase 5 if coverage bites |
+| (removed) yfinance | no longer in the stack |
+| i3investor page structure changes | parse failure = loud log + grade None + page banner, never guess; parsers are table-shape-tolerant; fix at leisure |
 | Supabase free tier outgrown | shrink window to 320d, or prune sub-liquidity tickers from warehouse |
 | Gemini model retirements | fallback chains + env overrides (already built) |
 | Loss of moomoo institutional/whale data | accepted feature loss; revisit via 13F (US) later |
@@ -701,7 +734,7 @@ makes AI output resemble a signal.
    `DATABASE_URL` exactly once; verify imported row counts before switching
    v2 off. v2 stays untouched as reference + fallback during the parallel
    week.
-2. **DECIDED: repo name `sepa-board-v3`** (create empty on GitHub first).
+2. New repo name — owner to choose (create empty on GitHub first).
 3. Keep or retire the VPS after the parallel week (only reason to keep:
    OpenD whale-flow, not ported in v3.0).
 4. EODHD monthly vs annual billing — start monthly for the validation month,
@@ -716,11 +749,11 @@ makes AI output resemble a signal.
 3. EODHD: All-World plan (monthly), copy API token.
 4. Google AI Studio: Gemini API key (can reuse the existing one — key reuse
    is fine, it's account-level).
-5. GitHub repo → Settings → Secrets → Actions: `DATABASE_URL`,
-   `EODHD_API_TOKEN`, `GEMINI_API_KEY`.
-6. Vercel: new project importing the repo, **Root Directory = `web`**, env
+6. GitHub repo → Settings → Secrets → Actions: `DATABASE_URL`,
+   `EODHD_API_TOKEN`, `GEMINI_API_KEY`, `APIFY_TOKEN`.
+7. Vercel: new project importing the repo, **Root Directory = `web`**, env
    vars `DATABASE_URL` + `DASHBOARD_PASSWORD` (pick a NEW password), deploy.
-7. For Phase 4 receipts import only: provide the OLD Supabase
+8. For Phase 4 receipts import only: provide the OLD Supabase
    `DATABASE_URL` as a temporary secret `V2_DATABASE_URL`, delete it after
    the import verifies.
 

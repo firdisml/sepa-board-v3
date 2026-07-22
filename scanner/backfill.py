@@ -21,7 +21,9 @@ log = logging.getLogger("backfill")
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--market", choices=["US", "MY", "ALL"], default="ALL")
+    # MY-only in v3.0 (PLAN §1 scope change). US is parked, not deleted — the
+    # engine stays multi-market, so reactivation is `--market US`, not a rebuild.
+    ap.add_argument("--market", choices=["US", "MY", "ALL"], default="MY")
     ap.add_argument("--years", type=int, default=2)
     ap.add_argument("--limit", type=int, help="first N symbols only (rehearsal)")
     args = ap.parse_args()

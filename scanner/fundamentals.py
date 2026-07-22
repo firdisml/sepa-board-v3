@@ -1,22 +1,21 @@
 """Quarterly fundamentals — the E in SEPA. Code computes, AI interprets.
 
-From yfinance quarterly income statements: YoY revenue / net-income / EPS
-growth with acceleration flags (the CANSLIM tell) and the net-margin trend.
-From the ticker profile: ROE and debt/equity (O'Neil quality screens).
-From the earnings calendar: the last reported EPS surprise.
+v3 change: the SOURCE moved to KLSE Screener (see klse_client), replacing
+both Apify (a paid actor in front of a page we can fetch ourselves) and
+yfinance (removed from the stack when US was parked). The MATH below is
+v2's, unchanged — `growth_metrics` and `grade` are ported verbatim because
+they encode fixed bugs: percentages off a negative base are meaningless and
+return None rather than a fake number, and a mostly-empty profile returns
+grade None rather than being punished for missing data.
 
-Everything rolls into a mechanical A-E "grade" — a transparent scorecard,
-not an AI opinion: EPS growth 25%+, revenue growth 20%+, acceleration,
-margin expansion, ROE 17%+. Percentages off a negative base are meaningless
-and return None rather than a fake number; a mostly-empty profile (common on
-Bursa) returns grade None rather than punishing missing data.
+Nothing here touches the network. `from_dossier` takes a dossier the caller
+already fetched, so one page GET serves fundamentals, street data and news.
 """
 from __future__ import annotations
 
 import logging
 
 import pandas as pd
-import yfinance as yf
 
 log = logging.getLogger(__name__)
 
@@ -91,31 +90,6 @@ def growth_metrics(q: pd.DataFrame | None) -> dict | None:
     return out
 
 
-def profile_metrics(t: yf.Ticker) -> dict:
-    """Quality numbers from the ticker profile — each guarded; Bursa coverage
-    is spotty and a missing field must stay None, never crash the scan."""
-    out = {"roe_pct": None, "debt_to_equity": None, "surprise_pct": None}
-    try:
-        info = t.info or {}
-        roe = info.get("returnOnEquity")
-        if isinstance(roe, (int, float)) and not pd.isna(roe):
-            out["roe_pct"] = round(float(roe) * 100, 1)
-        dte = info.get("debtToEquity")  # yfinance reports this as a percent-like number
-        if isinstance(dte, (int, float)) and not pd.isna(dte):
-            out["debt_to_equity"] = round(float(dte), 1)
-    except Exception:
-        pass
-    try:
-        ed = t.earnings_dates
-        if ed is not None and "Surprise(%)" in getattr(ed, "columns", []):
-            s = ed["Surprise(%)"].dropna()  # future rows are NaN; first drop = latest reported
-            if len(s):
-                out["surprise_pct"] = round(float(s.iloc[0]), 1)
-    except Exception:
-        pass
-    return out
-
-
 def grade(m: dict) -> str | None:
     """Mechanical CANSLIM-style scorecard, graded on the boxes that HAVE data:
     EPS (or NI) growth 25%+, revenue growth 20%+, growth accelerating,
@@ -140,16 +114,61 @@ def grade(m: dict) -> str | None:
             "C" if score >= 0.4 else "D" if score >= 0.2 else "E")
 
 
-def fetch(ticker: str) -> dict | None:
-    """Fundamentals are a nice-to-have — never fail the scan over them."""
+def frame_from_quarters(quarters: list[dict]) -> pd.DataFrame | None:
+    """Dossier quarters -> the line-item frame `growth_metrics` expects.
+
+    Same adapter role the Apify `normalize()` played in v2: the pipeline speaks
+    ONE fundamentals shape, and only this function knows where it came from.
+    Needs 5 quarters — YoY is meaningless without a year-ago comparison.
+    """
+    rows = []
+    for q in quarters or []:
+        end = q.get("quarter_end")
+        if not end:
+            continue
+        try:
+            ts = pd.to_datetime(end)
+        except Exception:
+            continue  # a malformed quarter must not sink the counter
+        rows.append((ts, q.get("revenue"), q.get("net_profit"), q.get("eps")))
+    if len(rows) < 5:
+        return None
+    rows.sort(key=lambda r: r[0], reverse=True)
+    cols = [r[0] for r in rows]
+    nan = float("nan")
+    data = {
+        "Total Revenue": [r[1] if r[1] is not None else nan for r in rows],
+        "Net Income": [r[2] if r[2] is not None else nan for r in rows],
+    }
+    if any(r[3] is not None for r in rows):
+        data["Diluted EPS"] = [r[3] if r[3] is not None else nan for r in rows]
+    return pd.DataFrame(data, index=cols).T
+
+
+def from_dossier(d: dict) -> dict | None:
+    """Dossier -> the fundamentals dict the rest of the pipeline speaks.
+
+    Fundamentals are a nice-to-have — never fail the scan over them.
+    """
     try:
-        t = yf.Ticker(ticker)
-        out = growth_metrics(t.quarterly_income_stmt)
+        out = growth_metrics(frame_from_quarters(d.get("quarters")))
         if out is None:
             return None
-        out.update(profile_metrics(t))
+        quarters = d.get("quarters") or []
+        # The source publishes ROE PER QUARTER (Maybank 2.7), but `grade` tests
+        # the O'Neil annual bar of 17%. Comparing the two would fail the ROE box
+        # for essentially every counter and silently depress every grade, so
+        # annualise. 2.7 x 4 = 10.8 matches Maybank's reported annual ROE.
+        q_roe = next((q.get("roe_pct") for q in quarters if q.get("roe_pct") is not None), None)
+        out["roe_pct"] = round(q_roe * 4, 1) if q_roe is not None else None
+        out["roe_basis"] = "quarterly x4" if q_roe is not None else None
+        out["debt_to_equity"] = None   # not published per-quarter by this source
+        out["surprise_pct"] = None     # Bursa filings carry no consensus estimate
+        out["source"] = "klsescreener"  # the stock page labels its provenance
+        out["source_url"] = d.get("url")
+        out["last_announced"] = quarters[0].get("announced") if quarters else None
         out["grade"] = grade(out)
         return out
     except Exception as e:
-        log.info("fundamentals fetch failed for %s: %s", ticker, e)
+        log.info("fundamentals build failed for %s: %s", d.get("code"), e)
         return None
