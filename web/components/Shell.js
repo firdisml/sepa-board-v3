@@ -1,4 +1,4 @@
-export default function Shell({ regime, asOf, active = "/", children }) {
+export default function Shell({ regime, asOf, active = "/", flush = false, children }) {
   const my = regime?.MY;
   const box = (label, r) => {
     if (!r) return null;
@@ -56,7 +56,9 @@ export default function Shell({ regime, asOf, active = "/", children }) {
         {box("MY — KLCI", my)}
         <div className="side-foot">Scan: {asOf || "no data yet"}<br />Not financial advice.</div>
       </aside>
-      <main className="main">{children}</main>
+      {/* the terminal manages its own scrolling and gutters, so it is given
+          the full pane rather than the padded document column */}
+      <main className={"main" + (flush ? " flush" : "")}>{children}</main>
     </div>
   );
 }

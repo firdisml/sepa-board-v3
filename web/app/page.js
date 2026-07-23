@@ -10,7 +10,7 @@ export default async function Home() {
   ]);
   const regime = bundle?.run?.regime || null;
   return (
-    <Shell regime={regime} asOf={bundle?.run?.run_date?.slice(0, 10)}>
+    <Shell regime={regime} asOf={bundle?.run?.run_date?.slice(0, 10)} flush={!!bundle}>
       {bundle
         ? <Board run={bundle.run} candidates={bundle.candidates} regime={regime} btByMarket={btByMarket} />
         : (
