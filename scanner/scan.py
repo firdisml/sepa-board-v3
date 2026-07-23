@@ -781,6 +781,10 @@ def main() -> int:
     sector_news = news.sector_rotation_news(sector_rows, all_candidates)
     log.info("Sector news: %d sectors with headlines", len(sector_news))
 
+    # observability: a grade count at the moment of save, so a future NULL-grade
+    # board can be traced to the scan (this number low) vs a later writer
+    _graded = sum(1 for c in all_candidates if (c.get("fundamentals") or {}).get("grade"))
+    log.info("saving %d candidates, %d carry a fundamentals grade", len(all_candidates), _graded)
     try:
         db.save_run(conn, run_date, regimes, all_candidates, sector_rows, sector_news)
         evaluate_open_positions(conn, run_date, all_data)
