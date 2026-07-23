@@ -266,3 +266,26 @@ class TestFeedWalk:
                                           self.ITEM.format(i=3)])
         k.news_feed("5326", max_pages=2)
         assert len(calls) == 2
+
+    def test_age_window_stops_the_walk(self, monkeypatch):
+        import datetime as dt
+        recent = (dt.datetime.now() - dt.timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+        fresh_page = (f'<li><h6><a href="/v2/news/view/1/t">fresh</a></h6>'
+                      f'<span data-date="{recent}">x</span></li>')
+        old_page = ('<li><h6><a href="/v2/news/view/9/t">ancient</a></h6>'
+                    '<span data-date="2020-01-01 00:00:00">x</span></li>')
+        calls = self._pages(monkeypatch, [fresh_page, old_page,
+                                          self.ITEM.format(i=2)])
+        items = k.news_feed("5326", max_pages=10, max_age_days=90)
+        assert [i["item_id"] for i in items] == ["1"]
+        assert len(calls) == 2   # page 2 pre-dates the window -> page 3 never fetched
+
+    def test_undated_items_survive_the_age_window(self, monkeypatch):
+        # announcements carry no year — unknown age must never be dropped
+        page = ('<a href="/v2/announcements/view/5" class="announcement-item">'
+                '<div class="date-box"><span>22</span><span>Jul</span></div>'
+                '<div class="title">Quarterly report</div></a>')
+        self._pages(monkeypatch, [page, ""])
+        items = k.announcements_feed("5326", max_pages=2, max_age_days=90)
+        assert [i["item_id"] for i in items] == ["5"]
+        assert items[0]["category"] == "results"

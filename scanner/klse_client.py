@@ -565,34 +565,64 @@ def parse_feed(html: str) -> list[dict]:
     return out
 
 
-def _feed(path: str, code: str, max_pages: int, session, known_ids) -> list[dict]:
-    """Walk a feed newest-first. Stops at an empty page (end of history) or a
-    page carrying nothing new (incremental refresh has caught up). Each page
-    costs one throttled request — callers size max_pages accordingly."""
+def _feed_ts(v) -> dt.datetime | None:
+    """Tolerant parse of a feed date ('2026-07-22 12:50:32'); None means the
+    item carries no machine date (announcements) and age rules must not
+    apply to it — unknown age is not old age."""
+    if not v:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(v).replace("T", " ").strip()[:19])
+    except ValueError:
+        return None
+
+
+def _feed(path: str, code: str, max_pages: int, session, known_ids,
+          max_age_days: int | None = None) -> list[dict]:
+    """Walk a feed newest-first. Stops at: an empty page (end of history), a
+    page with nothing new (incremental refresh, only when known_ids given),
+    or a page entirely older than max_age_days (dated feeds — the AI reads a
+    2-3 month window, not archaeology). Each page costs one throttled
+    request — callers size max_pages accordingly."""
     known = set(known_ids or ())
+    cutoff = (dt.datetime.now() - dt.timedelta(days=max_age_days)
+              if max_age_days else None)
     out: list[dict] = []
     for page in range(1, max_pages + 1):
         items = parse_feed(_get(_feed_url(path, code, page), session=session))
         if not items:
             break
+        if cutoff:
+            in_window = []
+            for i in items:
+                ts = _feed_ts(i["date"])
+                if ts is None or ts >= cutoff:
+                    in_window.append(i)
+            if not in_window:
+                break              # the whole page pre-dates the window
+            items = in_window
         fresh = [i for i in items if i["item_id"] not in known]
         out.extend(fresh)
-        if not fresh:
-            break
+        if known and not fresh:
+            break                  # caught up — nothing new on this page
     return out
 
 
 def news_feed(code: str, max_pages: int = 1,
               session: requests.Session | None = None,
-              known_ids=()) -> list[dict]:
+              known_ids=(), max_age_days: int | None = None) -> list[dict]:
     """Headlines are UNTRUSTED text (§7 invariant) — data, never instructions."""
-    return _feed(NEWS_FEED_PATH, code, max_pages, session, known_ids)
+    return _feed(NEWS_FEED_PATH, code, max_pages, session, known_ids,
+                 max_age_days=max_age_days)
 
 
 def announcements_feed(code: str, max_pages: int = 1,
                        session: requests.Session | None = None,
-                       known_ids=()) -> list[dict]:
-    items = _feed(ANN_FEED_PATH, code, max_pages, session, known_ids)
+                       known_ids=(), max_age_days: int | None = None) -> list[dict]:
+    """max_age_days is accepted but toothless here — announcement items carry
+    no year, so _feed_ts returns None and the page cap is the real bound."""
+    items = _feed(ANN_FEED_PATH, code, max_pages, session, known_ids,
+                  max_age_days=max_age_days)
     for it in items:
         it["category"] = classify(it["title"])
         it["source"] = ""   # announcements are Bursa filings — no publisher

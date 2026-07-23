@@ -12,7 +12,10 @@ on:
         required: true
       max_pages:
         description: "Feed pages per kind (8s each)"
-        default: "60"
+        default: "15"
+      max_age_days:
+        description: "News older than this is not pulled"
+        default: "90"
 
 jobs:
   backfill:
@@ -35,9 +38,11 @@ jobs:
           # inputs reach the shell via env, never interpolated (PLAN §11.1)
           TICKER: ${{ inputs.ticker }}
           MAX_PAGES: ${{ inputs.max_pages }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days }}
         run: >
           python -m scanner.backfill_news --ticker "$TICKER"
-          --max-pages "$MAX_PAGES" --dump-html feed_pages
+          --max-pages "$MAX_PAGES" --max-age-days "$MAX_AGE_DAYS"
+          --dump-html feed_pages
       - name: Upload raw feed pages (parser fixtures)
         if: always()
         uses: actions/upload-artifact@v4

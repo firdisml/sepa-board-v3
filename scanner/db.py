@@ -165,6 +165,33 @@ def save_counter_news(conn, ticker: str, kind: str, items: list[dict]) -> int:
     return n
 
 
+def load_counter_news(conn, ticker: str, days: int = 90,
+                      news_limit: int = 12, ann_limit: int = 10) -> tuple[list, list]:
+    """The AI's news window for one counter (PLAN §7.2 consumer): dated
+    headlines within `days`, plus the latest filings with their code-assigned
+    category. Announcements order by item_id — their feed rows carry no year,
+    but Bursa ids are monotonic."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT title, source, published_at::date::text
+               FROM counter_news
+               WHERE ticker = %s AND kind = 'news'
+                 AND published_at > now() - make_interval(days => %s)
+               ORDER BY published_at DESC LIMIT %s""",
+            (ticker, days, news_limit))
+        news = [{"title": t, "publisher": s, "date": d}
+                for t, s, d in cur.fetchall()]
+        cur.execute(
+            """SELECT title, category, COALESCE(published_at::date::text, date_text)
+               FROM counter_news
+               WHERE ticker = %s AND kind = 'announcement'
+               ORDER BY item_id::bigint DESC LIMIT %s""",
+            (ticker, ann_limit))
+        anns = [{"title": t[:150], "category": c, "date": d}
+                for t, c, d in cur.fetchall()]
+    return news, anns
+
+
 def apply_migrations(conn) -> None:
     """Run all db/migrations/*.sql in order. Safe to re-run (IF NOT EXISTS)."""
     import pathlib

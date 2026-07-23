@@ -237,10 +237,18 @@ def preflight(client) -> bool:
 
 
 def _note_payload(c: dict, headlines: list[dict], regime_light: str | None = None,
-                  can_search: bool = False) -> dict:
+                  can_search: bool = False, announcements: list[dict] | None = None) -> dict:
     """Pure prompt builder for one candidate's trade plan + news note (unit-tested)."""
     setup = c.get("setup") or {}
     vcp = c.get("vcp") or {}
+    ann_task = (
+        " recent_announcements are Bursa filings with a CODE-assigned category "
+        "(you never re-classify): results/contract dated inside or just before "
+        "the base is the catalyst to name in the assessment; dilution "
+        "(placement/rights) or uma is a hazard that outweighs the chart — fold "
+        "those into Warnings and the verdict."
+        if announcements else ""
+    )
     search_task = (
         " You have Google Search — search for the LATEST news on this counter "
         "(company name + 'Bursa Malaysia' for MY counters, company name + "
@@ -293,7 +301,7 @@ def _note_payload(c: dict, headlines: list[dict], regime_light: str | None = Non
             "the setup; decelerating growth, shrinking margins, or a big negative "
             "surprise are warnings worth naming with their numbers. Growth off a "
             "negative base shows as null — say 'unprofitable base quarter', "
-            "don't guess." + search_task
+            "don't guess." + ann_task + search_task
         ),
         "output_schema": {
             "risk": "low|medium|high|unknown",
@@ -344,8 +352,13 @@ def _note_payload(c: dict, headlines: list[dict], regime_light: str | None = Non
             },
             "headlines": [
                 {"title": h.get("title"), "publisher": h.get("publisher"), "date": h.get("date")}
-                for h in (headlines or [])[:5]
+                for h in (headlines or [])[:12]
             ],
+            "recent_announcements": [
+                {"title": a.get("title"), "category": a.get("category"),
+                 "date": a.get("date")}
+                for a in (announcements or [])[:8]
+            ] or None,
         },
     }
 
@@ -472,8 +485,20 @@ def main() -> int:
     news_by_ticker: dict[str, list] = {}  # collected here, reused by the briefs
     for c in eligible:
         try:
-            max_age = news.MY_MAX_AGE_DAYS if c["market"] == "MY" else news.MAX_AGE_DAYS
-            heads = news._fresh(news._ticker_news(c["ticker"]), max_age)
+            # counter_news (PLAN §7.2) is the primary headline source — the
+            # scraped klsescreener archive covers Bursa counters yfinance
+            # never did, and its announcements carry code-assigned catalyst/
+            # hazard categories. yfinance remains only as the empty-archive
+            # fallback until every board counter has passed through a scan.
+            anns: list = []
+            try:
+                heads, anns = db.load_counter_news(conn, c["ticker"])
+            except Exception as e:
+                log.warning("counter_news read failed for %s: %s", c["ticker"], e)
+                heads = []
+            if not heads:
+                max_age = news.MY_MAX_AGE_DAYS if c["market"] == "MY" else news.MAX_AGE_DAYS
+                heads = news._fresh(news._ticker_news(c["ticker"]), max_age)
             if heads:
                 news_by_ticker[c["ticker"]] = [
                     {"headline": h["title"], "date": h.get("date")} for h in heads[:3]]
@@ -484,7 +509,8 @@ def main() -> int:
             can_search = searches_spent < SEARCH_MAX
             if can_search:
                 searches_spent += 1
-            result = _call(client, NOTES_MODELS, _note_payload(c, heads, light, can_search),
+            result = _call(client, NOTES_MODELS,
+                           _note_payload(c, heads, light, can_search, announcements=anns),
                            NOTE_MAX_TOKENS, tools=can_search)
             if result and (result.get("plan") or result.get("summary") or result.get("note")):
                 plan = result.get("plan") or {}

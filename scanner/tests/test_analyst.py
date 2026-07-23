@@ -84,10 +84,24 @@ class TestNotePayload:
                       "warnings": [{"code": "climax_run"}]},
         }
 
-    def test_headlines_capped_at_five(self):
-        heads = [{"title": f"h{i}", "publisher": "X", "date": "2026-07-01"} for i in range(10)]
+    def test_headlines_capped_at_twelve(self):
+        # counter_news history (PLAN §7.2) widened the window from 5 to 12
+        heads = [{"title": f"h{i}", "publisher": "X", "date": "2026-07-01"} for i in range(20)]
         p = _note_payload(self._cand(), heads)
-        assert len(p["data"]["headlines"]) == 5
+        assert len(p["data"]["headlines"]) == 12
+
+    def test_announcements_ride_along_with_task_guidance(self):
+        anns = [{"title": "Private placement of new shares", "category": "dilution",
+                 "date": "2026-07-20"}] * 12
+        p = _note_payload(self._cand(), [], announcements=anns)
+        assert len(p["data"]["recent_announcements"]) == 8
+        assert p["data"]["recent_announcements"][0]["category"] == "dilution"
+        assert "CODE-assigned" in p["task"]      # model told not to re-classify
+        assert "dilution" in p["task"]
+        # without announcements: no dangling instructions, field stays null
+        p0 = _note_payload(self._cand(), [])
+        assert p0["data"]["recent_announcements"] is None
+        assert "CODE-assigned" not in p0["task"]
 
     def test_computed_values_passed_through_not_recomputed(self):
         p = _note_payload(self._cand(), [], regime_light="yellow")

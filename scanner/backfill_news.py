@@ -33,7 +33,11 @@ FEEDS = [
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ticker", required=True, help="internal ticker, e.g. 5326.KL")
-    ap.add_argument("--max-pages", type=int, default=60, help="pages per feed")
+    ap.add_argument("--max-pages", type=int, default=15, help="pages per feed")
+    ap.add_argument("--max-age-days", type=int, default=90,
+                    help="stop the news walk past this age (2-3 months is the "
+                         "AI's lookback window; announcements carry no year, "
+                         "so only max_pages bounds them)")
     ap.add_argument("--dump-html", metavar="DIR",
                     help="also save each feed's page-1 raw HTML here "
                          "(parser-fixture capture)")
@@ -52,13 +56,18 @@ def main() -> int:
             html = klse_client._get(klse_client._feed_url(path, code, 1),
                                     session=session)
             (out / f"{kind}_{code}_p1.html").write_text(html)
+        # No known_ids here on purpose: a backfill must be able to DEEPEN and
+        # REFRESH an existing archive (the known-stop would end the walk on
+        # page 1 the moment the newest items are already stored). The window
+        # bounds the walk; the UPSERT dedupes and refreshes titles/dates.
         known = db.known_news_ids(conn, args.ticker, kind)
         items = feed(code, max_pages=args.max_pages, session=session,
-                     known_ids=known)
-        wrote[kind] = db.save_counter_news(conn, args.ticker, kind, items)
-        log.info("%s %s: %d new rows (archive had %d). sample: %s",
-                 args.ticker, kind, wrote[kind], len(known),
-                 json.dumps(items[:3], ensure_ascii=False))
+                     max_age_days=args.max_age_days)
+        wrote[kind] = len([i for i in items if i["item_id"] not in known])
+        db.save_counter_news(conn, args.ticker, kind, items)
+        log.info("%s %s: %d new rows, %d refreshed (archive had %d). sample: %s",
+                 args.ticker, kind, wrote[kind], len(items) - wrote[kind],
+                 len(known), json.dumps(items[:3], ensure_ascii=False))
 
     if not any(wrote.values()) and not db.known_news_ids(conn, args.ticker, "news"):
         log.error("no items parsed and archive is empty — parser or feed "
