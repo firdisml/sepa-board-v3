@@ -539,12 +539,23 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         age = entry.get("_age_days")
         return age is None or age >= max_days
 
+    def has_grade(entry: dict | None) -> bool:
+        # A cached fundamentals row can be present and fresh yet carry no grade
+        # (a fetch that parsed the page but not the financials, or a genuinely
+        # data-poor counter). Such an entry looked "fresh" to the age check and
+        # blocked the re-fetch forever, so the board sat on NULL grades. Treat
+        # gradeless-but-fresh as due: a real grade is worth one fetch to recover,
+        # and a genuinely data-poor counter simply re-confirms None cheaply.
+        return bool(entry) and entry.get("grade") is not None
+
     def needs_fetch(ticker: str) -> bool:
-        # Gate on the FUNDAMENTALS cache primarily — the earlier bug gated on
+        # Gate on the FUNDAMENTALS cache primarily — an earlier version gated on
         # street only, so a full street cache (seeded by test runs) made every
-        # counter look fresh while fundamentals stayed permanently empty and
-        # NULL. A gap in EITHER cache now forces the one fetch that fills both.
-        return (_due(cached_fund.get(ticker), fund_refresh_days)
+        # counter look fresh while fundamentals stayed empty and NULL. A gap in
+        # either cache, OR a cached fundamentals entry with no grade, now forces
+        # the one fetch that fills both.
+        fund = cached_fund.get(ticker)
+        return (_due(fund, fund_refresh_days) or not has_grade(fund)
                 or _due(cached_street.get(ticker), street_refresh_days))
 
     order = sorted(candidates, key=readiness)
@@ -575,7 +586,11 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
             c["fundamentals"] = fresh
             fresh_fund[t] = fresh
         else:
-            c["fundamentals"] = cached_fund.get(t)
+            # only reuse a cached entry that actually carries a grade; a
+            # gradeless dict stored verbatim would render as a truthy-but-empty
+            # fundamentals object, which is worse than an honest None
+            cached = cached_fund.get(t)
+            c["fundamentals"] = cached if (cached and cached.get("grade")) else None
 
         c["earnings"] = _earnings_info(dossier)
         if dossier:
