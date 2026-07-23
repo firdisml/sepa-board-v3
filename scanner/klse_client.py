@@ -511,11 +511,33 @@ def _item_block(a):
     return node
 
 
+def _block_date(block) -> str | None:
+    """News carries `data-date="2026-07-22 12:50:32"` on a span; announcements
+    carry only a date-box of day+month spans ("22 Jul") — NO YEAR anywhere in
+    the feed markup (verified on the captured page), so those keep their raw
+    text and published_at stays NULL rather than a guessed year. The nightly
+    dossier path has full timestamps and fills them in for current items."""
+    d = block.find(attrs={"data-date": True})
+    if d:
+        return d["data-date"][:19]
+    box = block.find(class_="date-box")
+    if box:
+        return " ".join(s.get_text(strip=True)
+                        for s in box.find_all("span")).strip() or None
+    tm = block.find("time")
+    if tm:
+        return (tm.get("datetime") or tm.get_text(strip=True))[:19]
+    return None
+
+
 def parse_feed(html: str) -> list[dict]:
     """Feed items are identified by their /view/{id} links, never by container
     classes — the link pattern is the one piece of markup the site cannot
-    change without breaking its own navigation. Source and timestamp are
-    best-effort from the item's own block."""
+    change without breaking its own navigation. Captured markup (2026-07-23):
+    news items are `div.item` blocks with the title in `div.item-title` and a
+    separate thumbnail anchor; announcement items ARE their anchor
+    (`a.announcement-item`) wrapping a meta row and a `div.title` — anchor
+    text alone would swallow the date, company and category too."""
     soup = BeautifulSoup(html, "html.parser")
     out, seen = [], set()
     for a in soup.find_all("a", href=True):
@@ -523,20 +545,22 @@ def parse_feed(html: str) -> list[dict]:
         if not m:
             continue
         item_id = m.group(1)
-        title = a.get_text(" ", strip=True)
-        if item_id in seen or not title:
-            continue  # thumbnail anchor for an item already taken, or image-only
-        seen.add(item_id)
+        if item_id in seen:
+            continue  # thumbnail anchor for an item already taken
         block = _item_block(a)
-        tm = block.find("time")
+        title_el = block.find(class_="title") or block.find(class_="item-title")
+        title = (title_el.get_text(" ", strip=True) if title_el
+                 else a.get_text(" ", strip=True))
+        if not title:
+            continue  # image-only anchor with no titled block
+        seen.add(item_id)
         src = block.find("span")
         out.append({
             "item_id": item_id,
             "title": title[:300],
             "url": _absolute(a["href"]),
             "source": src.get_text(strip=True)[:40] if src else "",
-            "date": ((tm.get("datetime") or tm.get_text(strip=True))[:19]
-                     if tm else None),
+            "date": _block_date(block),
         })
     return out
 

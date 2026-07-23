@@ -27,6 +27,8 @@ jobs:
           cache-dependency-path: scanner/requirements.txt
       - name: Install dependencies
         run: pip install -r scanner/requirements.txt
+      - name: Tests first (PLAN 11.2)
+        run: python -m pytest scanner/tests -q
       - name: Backfill feeds
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

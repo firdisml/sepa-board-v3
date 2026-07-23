@@ -173,46 +173,55 @@ class TestFundamentalsIntegration:
         assert m is None or m["ni_yoy_pct"] is None
 
 
+FEED_NEWS = pathlib.Path(__file__).parent / "fixtures" / "klsescreener_newsfeed_5326.html.gz"
+FEED_ANN = pathlib.Path(__file__).parent / "fixtures" / "klsescreener_annfeed_5326.html.gz"
+
+
 class TestFeedParsing:
-    """PLAN §7.2 feeds. Synthetic markup mirroring the stock page's embedded
-    list style until the backfill workflow captures a real feed fixture —
-    parse_feed keys on the /view/{id} links, not on container classes, so it
-    must survive markup it has never seen."""
+    """PLAN §7.2 feeds, against REAL captured pages (5326, 2026-07-23, via the
+    backfill-news workflow's fixture artifact). News items are div.item blocks
+    with a data-date span; announcement items ARE their anchor with a
+    day+month date-box and no year anywhere."""
 
-    PAGE = """
-    <html><body><div class="container">
-      <ul class="list-group">
-        <li class="list-group-item">
-          <a href="/v2/news/view/1759463/99-speed-mart-growth-intact">
-            <img src="/thumb.jpg"></a>
-          <h6><a href="/v2/news/view/1759463/99-speed-mart-growth-intact">
-            99 Speed Mart growth intact</a></h6>
-          <span>TheStar</span>
-          <time datetime="2026-07-22 00:00:00">22 Jul, 2026</time>
-        </li>
-        <li class="list-group-item">
-          <h6><a href="/v2/news/view/1759175/x">Chinese headline</a></h6>
-          <span>Chinapress</span>
-          <time datetime="2026-07-21 09:30:00">21 Jul, 2026</time>
-        </li>
-      </ul>
-      <a href="/v2/stocks/view/5326">99SMART</a>
-    </div></body></html>
-    """
+    @pytest.fixture(scope="class")
+    def news_items(self):
+        with gzip.open(FEED_NEWS, "rt", encoding="utf-8") as f:
+            return k.parse_feed(f.read())
 
-    def test_items_extracted_with_ids_dates_sources(self):
-        items = k.parse_feed(self.PAGE)
-        assert [i["item_id"] for i in items] == ["1759463", "1759175"]
-        first = items[0]
-        assert first["title"] == "99 Speed Mart growth intact"
+    @pytest.fixture(scope="class")
+    def ann_items(self):
+        with gzip.open(FEED_ANN, "rt", encoding="utf-8") as f:
+            return k.parse_feed(f.read())
+
+    def test_news_rows_not_just_a_page(self, news_items):
+        assert len(news_items) >= 15
+        assert news_items[0]["item_id"] == "1759701"
+
+    def test_news_titles_and_sources(self, news_items):
+        first = news_items[0]
+        assert first["title"].startswith("Wider retail network")
+        assert first["source"] == "TheEdge"
         assert first["url"].startswith("https://www.klsescreener.com/v2/news/view/")
-        assert first["source"] == "TheStar"
-        assert first["date"] == "2026-07-22 00:00:00"
 
-    def test_thumbnail_anchor_not_duplicated_and_neighbours_not_bled(self):
-        items = k.parse_feed(self.PAGE)
-        assert len(items) == 2                    # img anchor didn't double-count
-        assert items[1]["date"] == "2026-07-21 09:30:00"  # own time, not sibling's
+    def test_news_dates_come_from_data_date(self, news_items):
+        assert news_items[0]["date"] == "2026-07-22 12:50:32"
+        dated = [i for i in news_items if i["date"]]
+        assert len(dated) == len(news_items), "every news item carries data-date"
+
+    def test_news_thumbnail_anchor_not_duplicated(self, news_items):
+        ids = [i["item_id"] for i in news_items]
+        assert len(ids) == len(set(ids))
+
+    def test_announcement_title_is_clean_not_whole_row(self, ann_items):
+        first = ann_items[0]
+        assert first["item_id"] == "11634777"
+        assert first["title"].startswith("Changes in Sub. S-hldr's Int")
+        assert "SPEED MART" not in first["title"]   # company/meta not swallowed
+        assert "5:50 pm" not in first["title"]
+
+    def test_announcement_date_is_day_month_text(self, ann_items):
+        # no year in the feed markup — raw text kept, never a guessed year
+        assert ann_items[0]["date"] == "22 Jul"
 
     def test_non_view_links_ignored_and_empty_page_is_empty(self):
         assert k.parse_feed("<html><body><a href='/v2/stocks/view/5326'>x</a>"
