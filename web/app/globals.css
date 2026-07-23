@@ -157,10 +157,12 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
    the ragged baseline mix of inline text + padded tags */
 .panel h3 { font-size: 13px; font-weight: 700; margin: 0 0 12px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .panel h3 .tag { font-weight: 600; }
-.detail-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; gap: 10px; flex-wrap: wrap; }
-.detail-head .t { font-size: 18px; font-weight: 700; }
-.detail-head .n { font-size: 13px; color: var(--dim); margin-left: 10px; }
-.detail-head .p { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+.detail-price { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+.back-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px;
+  font-size: 12.5px; font-weight: 600; text-decoration: none; border-radius: 6px;
+  white-space: nowrap;
+}
 .legend { display: flex; gap: 16px; font-size: 11.5px; color: var(--dim); margin-top: 8px; flex-wrap: wrap; }
 .legend .l20 { color: #3dd6c3; } .legend .l50 { color: var(--blue); } .legend .l150 { color: var(--amber); } .legend .l200 { color: var(--purple); }
 .legend .right { margin-left: auto; }

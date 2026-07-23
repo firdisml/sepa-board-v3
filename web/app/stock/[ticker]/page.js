@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { candidateDetail, latestBundle, latestBacktestStatsByMarket } from "@/lib/db";
+import { money } from "@/lib/format";
 import Shell from "@/components/Shell";
 import Candles from "@/components/Candles";
 import Calculator from "@/components/Calculator";
@@ -34,7 +35,6 @@ export default async function Stock({ params }) {
     );
   }
 
-  const ccy = "$";
   // this row is the ticker's LAST appearance — which may predate the latest
   // run. Everything on the page (price, chart, AI plan) is from that date, so
   // say it loudly instead of letting old data pass as current.
@@ -75,7 +75,11 @@ export default async function Stock({ params }) {
       <div className="page-head">
         <div>
           <h1>{c.ticker} {setup.ipo ? <span className="tag ipo">IPO</span> : null}</h1>
-          <div className="asof">{c.name || ""} · {c.sector || "—"} · <Link href="/" style={{ color: "var(--blue)" }}>← screener</Link></div>
+          <div className="asof">{c.name || ""} · {c.industry || c.sector || "—"}</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div className="detail-price">{money(c.price, c.market)}</div>
+          <Link href="/" className="btn back-btn">← Screener</Link>
         </div>
       </div>
 
@@ -91,10 +95,6 @@ export default async function Stock({ params }) {
       <div className="detail-grid">
         <div>
           <div className="panel">
-            <div className="detail-head">
-              <div><span className="t">{c.ticker}</span><span className="n">{c.industry || c.sector || ""}</span></div>
-              <div className="p">{ccy}{Number(c.price).toFixed(2)}</div>
-            </div>
             <Candles candles={c.candles} pivot={c.pivot} market={c.market} levels={btLevels}
               markers={c.patterns?.chart_markers} swings={vcp.swings} contractions={contr}
               bases={setup.base_count?.bases} />
