@@ -9,14 +9,17 @@ import Brief from "@/components/Brief";
 // look mysteriously empty.
 const FILTER_KEY = "sepa-screener-filters";
 
-// One page: the board list stays mounted in its own sidebar column and a
-// click fetches that counter's detail into the pane beside it — no
-// navigation, so there is nothing to "go back" from.
+// One page, dashboard-dense: a topbar line (search + board totals + two
+// opt-in drawers for the brief/maturing strip, collapsed by default so they
+// don't push the actual board down), then list-sidebar + detail side by
+// side, each pane scrolling on its own — the page itself shouldn't have to.
 export default function Board({ run, candidates, regime, btByMarket }) {
   const [minRS, setMinRS] = useState(70);
   const [vcpOnly, setVcpOnly] = useState(false);
   const [fullOnly, setFullOnly] = useState(false);
   const [q, setQ] = useState("");
+  const [showBrief, setShowBrief] = useState(false);
+  const [showMaturing, setShowMaturing] = useState(false);
   // top of the board-sorted list by default — same value on server and first
   // client render (both read the same `candidates` prop), so there is no
   // hydration mismatch and no flash of an empty pane before the mount effect
@@ -93,29 +96,41 @@ export default function Board({ run, candidates, regime, btByMarket }) {
     .filter((r) => r.setup?.anticipation)
     .sort((a, b) => (b.setup.anticipation.score || 0) - (a.setup.anticipation.score || 0))
     .slice(0, 10);
+  const hasBrief = Object.keys(run?.ai_brief || {}).some(
+    (m) => run.ai_brief[m] && typeof run.ai_brief[m] === "object"
+  );
 
   return (
-    <>
-      <div className="page-head">
-        <div>
-          <h1>Screener</h1>
-          <div className="asof">as of {run?.run_date?.slice(0, 10)}</div>
-        </div>
+    <div className="dash">
+      <div className="dash-topbar">
         <input className="search" placeholder="Search symbol or name…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <span className="stat-line">
+          <b>{rows.length}</b> counters · <b>{passing}</b> pass template ·{" "}
+          <b>{vcps}</b> VCP · <b>{swings}</b> swing-ready · avg RS <b>{avgRS}</b>
+        </span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          {hasBrief && (
+            <button className={"chip" + (showBrief ? " on" : "")} onClick={() => setShowBrief(!showBrief)}>
+              AI brief
+            </button>
+          )}
+          {maturing.length > 0 && (
+            <button className={"chip" + (showMaturing ? " on" : "")} onClick={() => setShowMaturing(!showMaturing)}>
+              Maturing ({maturing.length})
+            </button>
+          )}
+        </span>
+        <span className="asof">as of {run?.run_date?.slice(0, 10)}</span>
       </div>
 
-      <Brief brief={run?.ai_brief} onSelect={setSelected} />
-
-      <div className="stats">
-        <div className="stat"><div className="k">Trend Template pass</div><div className="v green">{passing}</div><div className="sub">of {rows.length} candidates on the board</div></div>
-        <div className="stat"><div className="k">VCP setups live</div><div className="v amber">{vcps}</div><div className="sub">contractions + volume dry-up</div></div>
-        <div className="stat"><div className="k">Swing-ready</div><div className="v blue">{swings}</div><div className="sub">VCP at/near pivot, not extended</div></div>
-        <div className="stat"><div className="k">Avg RS (passing)</div><div className="v">{avgRS}</div><div className="sub">target ≥ 90 for leaders</div></div>
-      </div>
-
-      {maturing.length > 0 && (
-        <div className="panel" style={{ marginBottom: 14, padding: "12px 18px" }}>
-          <div className="rsec-t" style={{ marginBottom: 8 }}>🎯 Maturing setups — breakout anticipation (closest to ready first)</div>
+      {showBrief && (
+        <div className="dash-drawer">
+          <Brief brief={run?.ai_brief} onSelect={setSelected} />
+        </div>
+      )}
+      {showMaturing && (
+        <div className="dash-drawer panel" style={{ padding: "12px 18px" }}>
+          <div className="rsec-t" style={{ marginBottom: 8 }}>🎯 Breakout anticipation — closest to ready first</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {maturing.map((r) => (
               <button key={r.ticker + r.market} className="tkr" onClick={() => setSelected(r.ticker)}
@@ -127,8 +142,8 @@ export default function Board({ run, candidates, regime, btByMarket }) {
         </div>
       )}
 
-      <div className="workbench">
-        <div className="workbench-list">
+      <div className="dash-body">
+        <div className="dash-list">
           <div className="filters">
             <button className={"chip" + (fullOnly ? " on" : "")} onClick={() => setFullOnly(!fullOnly)}>Full template</button>
             <button className={"chip" + (vcpOnly ? " on" : "")} onClick={() => setVcpOnly(!vcpOnly)}>VCP only</button>
@@ -139,7 +154,7 @@ export default function Board({ run, candidates, regime, btByMarket }) {
           </div>
           <BoardList rows={filtered} selected={selected} onSelect={setSelected} />
         </div>
-        <div className="workbench-detail">
+        <div className="dash-detail">
           {!selected && (
             <div className="panel">Pick a counter from the list to see its chart and plan.</div>
           )}
@@ -156,6 +171,6 @@ export default function Board({ run, candidates, regime, btByMarket }) {
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }

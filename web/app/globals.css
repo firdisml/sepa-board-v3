@@ -150,14 +150,7 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rs { font-family: var(--mono); font-weight: 700; }
 .rs.hot { color: var(--green); } .rs.ok { color: var(--ink); } .rs.weak { color: var(--red); }
 
-/* ---- workbench: board list (sidebar) + detail, one page, no navigation ---- */
-.workbench { display: flex; gap: 14px; align-items: flex-start; }
-.workbench-list {
-  width: 380px; flex: none; position: sticky; top: 24px;
-  display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 48px);
-}
-.workbench-list .filters { margin-bottom: 0; }
-.workbench-detail { flex: 1; min-width: 0; }
+.dash-list .filters { margin-bottom: 0; flex: none; }
 
 .board-list {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
@@ -178,7 +171,38 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 .board-list tbody tr.selected { background: var(--panel-2); box-shadow: inset 3px 0 0 0 var(--pink); }
 .board-list tbody tr:last-child td { border-bottom: none; }
 
-/* ---- detail page ---- */
+/* ---- dashboard: one page, everything the selected counter needs visible
+   without scrolling the page — only individual panes scroll (moomoo-style:
+   watchlist + chart + tabs, not a document of stacked panels) ---- */
+.dash { display: flex; flex-direction: column; gap: 10px; height: calc(100vh - 48px); min-height: 0; }
+.dash-topbar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap; flex: none;
+  font-size: 12px; color: var(--dim);
+}
+.dash-topbar .search { width: 220px; padding: 6px 12px; font-size: 12.5px; }
+.dash-topbar .stat-line { font-family: var(--mono); color: var(--dim); }
+.dash-topbar .stat-line b { color: var(--ink); font-weight: 700; }
+.dash-drawer { flex: none; margin-bottom: 4px; }
+
+.dash-body { display: flex; gap: 12px; flex: 1; min-height: 0; }
+.dash-list { width: 380px; flex: none; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.dash-list .board-list { flex: 1; min-height: 0; }
+.dash-detail { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }
+
+/* ---- stock detail: header + chart + dense fact strip + tabs ---- */
+.stock-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.stock-head h1 { font-size: 17px; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px; }
+.stock-head .asof { color: var(--faint); font-size: 12px; }
+.stock-facts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+.stock-facts .fact {
+  font-family: var(--mono); font-size: 11.5px; color: var(--dim); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px;
+}
+.stock-facts .fact b { color: var(--ink); }
+.tab-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.tab-panel { max-height: 300px; overflow-y: auto; }
+
+/* ---- detail page (legacy — still used inside tab panels) ---- */
 .detail-grid { display: grid; grid-template-columns: 1.7fr 1fr; gap: 14px; align-items: start; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; }
 /* flex keeps title text and tag chips on one vertical center line instead of
@@ -319,8 +343,10 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 @media (max-width: 1100px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .detail-grid { grid-template-columns: 1fr; }
-  .workbench { flex-direction: column; }
-  .workbench-list { width: 100%; position: static; max-height: 420px; }
+  .dash { height: auto; }
+  .dash-body { flex-direction: column; }
+  .dash-list { width: 100%; max-height: 420px; }
+  .dash-detail { overflow-y: visible; max-height: none; }
 }
 @media (max-width: 900px) {
   /* markets stack instead of squeezing side by side */
