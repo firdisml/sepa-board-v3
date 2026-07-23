@@ -18,6 +18,8 @@ repo is the source of all ported code — read it before writing anything new.
 > from i3investor (code-parsed tables → mechanical grade; Gemini interprets).
 > Prices remain EODHD (validated live 2026-07-22). yfinance is REMOVED from
 > the stack entirely — its last jobs (US fundamentals/earnings) left with US.
+> Third decision (2026-07-22, in build): **i3investor is out, KLSE Screener
+> is in** — see the SUPERSEDED note at §5; module is `scanner/klse_client.py`.
 
 A nightly end-of-day stock screener for the **Bursa Malaysia** market (US later)
 implementing **Mark Minervini's SEPA methodology** (Trend Template, VCP, buy
@@ -296,6 +298,18 @@ are labeled "already cleared — confirmation, not an entry."
 ## 5. Fundamentals (the E in SEPA) — code computes, AI reads
 ### SOURCE (DECIDED 2026-07-22): i3investor, replacing Apify AND yfinance
 
+> **SUPERSEDED IN BUILD (2026-07-22, commit 6b2d24c): source is KLSE
+> Screener, not i3investor.** Live probe disproved this section's premise:
+> i3investor tables render an empty `<tbody>` — rows arrive by AJAX with a
+> Bearer token issued only at sign-in, and anonymous sign-in attempts drew a
+> Cloudflare 429. KLSE Screener serves the same Bursa filings as ordinary
+> server-rendered HTML: one GET of `/v2/stocks/view/{code}` covers 120
+> quarters, 25 annual years, dividends and shareholder movements. Module is
+> `scanner/klse_client.py` (full rationale in its docstring). Reading this
+> section and §7.1: i3investor → KLSE Screener, `i3_client.py` →
+> `klse_client.py`, seven throttled page-fetches → one. Only broker
+> consensus TPs were lost — commentary-only per §7.1, nothing graded.
+
 One module (`scanner/i3_client.py`, shared with the street skill §7.1)
 fetches i3investor pages and parses their HTML tables DETERMINISTICALLY
 (requests + pandas.read_html — probe 2026-07-18 confirmed server-rendered
@@ -382,6 +396,11 @@ the mechanical grade; Gemini only interprets them (core value #2).
 
 ### 7.1 Street-view skill (i3investor, MY counters) — Phase 5+
 
+> **SUPERSEDED IN BUILD — source moved to KLSE Screener (see §5 note).**
+> The division-of-labor, prioritization, caching and synthesis rules below
+> all stand; only the vendor and URL scheme changed, and the seven per-page
+> fetches collapsed into one `dossier(code)` fetch of the stock page.
+
 **Division of labor: CODE fetches and parses; AI only synthesizes.** Fetch
 pages server-side (requests + pandas.read_html; NOT model url_context — 10×
 cheaper, vendor-neutral, deterministic). Module: `scanner/i3_client.py`
@@ -458,6 +477,54 @@ Parse failure ⇒ log + "street data unavailable", never guess.
 receipts — commentary only, badged in the UI. Respect the site: throttled
 sequential fetches, ~10 pages/night, cache-first. US analog (optional,
 later): stockanalysis.com-style pages via the same module.
+
+### 7.2 Counter news + announcement feeds (ADDED 2026-07-23) — depth beyond the stock page
+
+The stock page (§7.1 `dossier`) carries only the last ~10 news items and
+~20 announcements — enough for "what moved it this week", too shallow for
+EP-catalyst lookback or a durable per-counter history. KLSE Screener also
+serves dedicated, paginated feeds, server-rendered like everything else
+(probed 2026-07-23 on 5326; no JS wall):
+
+- News: `/v2/news/stock/{code}`, older pages at
+  `/v2/news/stock/{code}/{page}` (2, 3, …). Verified deep — page 50 of
+  5326 still returns items (back to its Sep-2024 IPO).
+- Announcements: `/v2/announcements/stock/{code}`, same `/{page}` scheme.
+- The site's "Load more" button just GETs the next page URL; a page with
+  zero item links = end of history — that is the only stop condition.
+- Item links: `/v2/news/view/{item_id}/{slug}` and
+  `/v2/announcements/view/{item_id}` — `item_id` is the dedupe key. News
+  detail pages are aggregator snippets + a "Full Article on {source}"
+  outlink; we store LIST-LEVEL metadata only and never crawl the
+  publishers (paywalls, anti-bot, out of budget — the headline + source +
+  date is the signal, per v2's sector-news lesson).
+
+Implementation — extend `scanner/klse_client.py`, same session, same
+THROTTLE + soft-block backoff (the burst limit measured 2026-07-22 —
+HTTP 200 with content stripped — applies to these pages too):
+
+- `news_feed(code, max_pages=1)` and `announcements_feed(code,
+  max_pages=1)` → list[dict] `{item_id, title, url, source, date}`;
+  announcements gain `category` via the existing `classify()`. Headlines
+  stay UNTRUSTED text (§7 invariant) — Chinese-language items included.
+- **Nightly incremental:** page 1 only, board candidates only, same
+  trade-readiness priority as §7.1; stop paging as soon as every item on a
+  page is already in the DB. **Backfill:** manual dispatch with a
+  max_pages cap — at the 8s throttle a 50-page history is ~7 min of
+  fetching, so backfill never runs inside the nightly scan.
+- Storage: `counter_news(ticker, kind news|announcement, item_id, title,
+  url, source, category, published_at, fetched_at)`,
+  UNIQUE(kind, item_id); migration 017 (§10). UPSERT, never DELETE
+  (value #3).
+- Consumers: (a) §5 QR-refresh trigger — a fresh `category=results`
+  announcement invalidates that counter's fundamentals cache; (b) EP
+  catalyst lookback — the Tier-A note payload's news block gains history
+  ("catalyst fired N days before the base completed"), not just this
+  week's headlines; (c) the stock-page news tab reads from the table
+  instead of a live scrape.
+- Failure honesty: parse failure = loud log + "news unavailable"; but an
+  EMPTY feed on a quiet counter is data, not failure — thin coverage is
+  itself signal (§7.1: institutionally undiscovered).
 
 ---
 
@@ -548,7 +615,7 @@ deciles don't slope, say so on /performance.
 ## 10. Database schema (Postgres/Supabase)
 
 Port v2 `schema.sql` + migrations 001–016, then add:
-`candles`, `candles_meta` (§3.3). Existing tables kept as-is: scan_runs
+`candles`, `candles_meta` (§3.3); `counter_news` (§7.2, migration 017). Existing tables kept as-is: scan_runs
 (regime jsonb, ai_brief, sector_news), candidates (~30 cols incl. checks/
 vcp/setup/patterns/levels/candles/fundamentals/ai_note jsonb), sector_ranks,
 signal_outcomes (UNIQUE signal_date+ticker+signal_type), backtests,
