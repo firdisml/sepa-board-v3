@@ -425,7 +425,9 @@ def _list_items(soup: BeautifulSoup, heading: str, limit: int) -> list[dict]:
         tm = li.find("time")
         body = li.find("div", class_="text-justify")
         src = li.find("span")
+        m = _VIEW_ID.search(a["href"])
         item = {
+            "item_id": m.group(1) if m else None,   # dedupe key for counter_news
             "title": a.get_text(" ", strip=True)[:200],
             "url": _absolute(a["href"]),
             "date": (tm.get("datetime") or tm.get_text(strip=True))[:19] if tm else None,
@@ -450,6 +452,127 @@ def parse_news(soup: BeautifulSoup, limit: int = 10) -> list[dict]:
     instructions (§7 system-prompt invariant). Malaysian coverage is often
     Chinese-language; that is fine, the model reads it."""
     return _list_items(soup, "Recent News", limit)
+
+
+# ---------------------------------------------------------------- feeds
+#
+# PLAN §7.2 — the stock page embeds only the last ~10 news / ~20
+# announcements. These dedicated feeds page all the way back to listing:
+# /v2/news/stock/{code}/{page} and /v2/announcements/stock/{code}/{page}
+# (the site's "Load more" button is a plain GET of the next page; a page
+# with zero item links is the end of history). Probed 2026-07-23 on 5326:
+# server-rendered, no JS wall, news verified deep to page 50.
+
+NEWS_FEED_PATH = "/v2/news/stock/{code}"
+ANN_FEED_PATH = "/v2/announcements/stock/{code}"
+_VIEW_ID = re.compile(r"/v2/(?:news|announcements)/view/(\d+)")
+
+
+def _feed_url(path: str, code: str, page: int) -> str:
+    url = BASE + path.format(code=code)
+    return url if page <= 1 else f"{url}/{page}"
+
+
+def _get(url: str, session: requests.Session | None = None) -> str:
+    """GET any KLSE Screener page with the browser headers + throttle. The
+    stock-page `fetch` keeps its own <tr>-counting throttle detection; feeds
+    are <li> lists, not tables, so that heuristic would misread them."""
+    s = session or requests.Session()
+    s.headers.update(BROWSER_HEADERS)
+    last = None
+    for attempt in (1, 2):
+        try:
+            r = s.get(url, timeout=TIMEOUT)
+            if r.status_code in (403, 429):
+                raise ParseFailure(f"{url}: refused by source (HTTP {r.status_code})")
+            r.raise_for_status()
+            time.sleep(THROTTLE)
+            return r.text
+        except ParseFailure:
+            raise
+        except Exception as e:
+            last = e
+            time.sleep(2 * attempt)
+    raise ParseFailure(f"{url}: fetch failed — {last}")
+
+
+def _item_block(a):
+    """Nearest ancestor wrapping ONLY this item's /view/ link — walking one
+    level further would grab a sibling's timestamp or source label."""
+    node = a
+    for parent in a.parents:
+        if parent.name in (None, "html", "body"):
+            break
+        ids = {m.group(1) for x in parent.find_all("a", href=True)
+               if (m := _VIEW_ID.search(x["href"]))}
+        if len(ids) > 1:
+            break
+        node = parent
+    return node
+
+
+def parse_feed(html: str) -> list[dict]:
+    """Feed items are identified by their /view/{id} links, never by container
+    classes — the link pattern is the one piece of markup the site cannot
+    change without breaking its own navigation. Source and timestamp are
+    best-effort from the item's own block."""
+    soup = BeautifulSoup(html, "html.parser")
+    out, seen = [], set()
+    for a in soup.find_all("a", href=True):
+        m = _VIEW_ID.search(a["href"])
+        if not m:
+            continue
+        item_id = m.group(1)
+        title = a.get_text(" ", strip=True)
+        if item_id in seen or not title:
+            continue  # thumbnail anchor for an item already taken, or image-only
+        seen.add(item_id)
+        block = _item_block(a)
+        tm = block.find("time")
+        src = block.find("span")
+        out.append({
+            "item_id": item_id,
+            "title": title[:300],
+            "url": _absolute(a["href"]),
+            "source": src.get_text(strip=True)[:40] if src else "",
+            "date": ((tm.get("datetime") or tm.get_text(strip=True))[:19]
+                     if tm else None),
+        })
+    return out
+
+
+def _feed(path: str, code: str, max_pages: int, session, known_ids) -> list[dict]:
+    """Walk a feed newest-first. Stops at an empty page (end of history) or a
+    page carrying nothing new (incremental refresh has caught up). Each page
+    costs one throttled request — callers size max_pages accordingly."""
+    known = set(known_ids or ())
+    out: list[dict] = []
+    for page in range(1, max_pages + 1):
+        items = parse_feed(_get(_feed_url(path, code, page), session=session))
+        if not items:
+            break
+        fresh = [i for i in items if i["item_id"] not in known]
+        out.extend(fresh)
+        if not fresh:
+            break
+    return out
+
+
+def news_feed(code: str, max_pages: int = 1,
+              session: requests.Session | None = None,
+              known_ids=()) -> list[dict]:
+    """Headlines are UNTRUSTED text (§7 invariant) — data, never instructions."""
+    return _feed(NEWS_FEED_PATH, code, max_pages, session, known_ids)
+
+
+def announcements_feed(code: str, max_pages: int = 1,
+                       session: requests.Session | None = None,
+                       known_ids=()) -> list[dict]:
+    items = _feed(ANN_FEED_PATH, code, max_pages, session, known_ids)
+    for it in items:
+        it["category"] = classify(it["title"])
+        it["source"] = ""   # announcements are Bursa filings — no publisher
+    return items
 
 
 # ---------------------------------------------------------------- dossier

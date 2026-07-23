@@ -171,3 +171,89 @@ class TestFundamentalsIntegration:
                 "net_profit": -10.0, "eps": -0.5} for i in range(1, 6)]
         m = fundamentals.growth_metrics(fundamentals.frame_from_quarters(qs))
         assert m is None or m["ni_yoy_pct"] is None
+
+
+class TestFeedParsing:
+    """PLAN §7.2 feeds. Synthetic markup mirroring the stock page's embedded
+    list style until the backfill workflow captures a real feed fixture —
+    parse_feed keys on the /view/{id} links, not on container classes, so it
+    must survive markup it has never seen."""
+
+    PAGE = """
+    <html><body><div class="container">
+      <ul class="list-group">
+        <li class="list-group-item">
+          <a href="/v2/news/view/1759463/99-speed-mart-growth-intact">
+            <img src="/thumb.jpg"></a>
+          <h6><a href="/v2/news/view/1759463/99-speed-mart-growth-intact">
+            99 Speed Mart growth intact</a></h6>
+          <span>TheStar</span>
+          <time datetime="2026-07-22 00:00:00">22 Jul, 2026</time>
+        </li>
+        <li class="list-group-item">
+          <h6><a href="/v2/news/view/1759175/x">Chinese headline</a></h6>
+          <span>Chinapress</span>
+          <time datetime="2026-07-21 09:30:00">21 Jul, 2026</time>
+        </li>
+      </ul>
+      <a href="/v2/stocks/view/5326">99SMART</a>
+    </div></body></html>
+    """
+
+    def test_items_extracted_with_ids_dates_sources(self):
+        items = k.parse_feed(self.PAGE)
+        assert [i["item_id"] for i in items] == ["1759463", "1759175"]
+        first = items[0]
+        assert first["title"] == "99 Speed Mart growth intact"
+        assert first["url"].startswith("https://www.klsescreener.com/v2/news/view/")
+        assert first["source"] == "TheStar"
+        assert first["date"] == "2026-07-22 00:00:00"
+
+    def test_thumbnail_anchor_not_duplicated_and_neighbours_not_bled(self):
+        items = k.parse_feed(self.PAGE)
+        assert len(items) == 2                    # img anchor didn't double-count
+        assert items[1]["date"] == "2026-07-21 09:30:00"  # own time, not sibling's
+
+    def test_non_view_links_ignored_and_empty_page_is_empty(self):
+        assert k.parse_feed("<html><body><a href='/v2/stocks/view/5326'>x</a>"
+                            "</body></html>") == []
+        assert k.parse_feed("") == []
+
+
+class TestFeedWalk:
+    def _pages(self, monkeypatch, pages):
+        calls = []
+        def fake_get(url, session=None):
+            calls.append(url)
+            return pages[min(len(calls), len(pages)) - 1]
+        monkeypatch.setattr(k, "_get", fake_get)
+        return calls
+
+    ITEM = ('<li><h6><a href="/v2/news/view/{i}/t">title {i}</a></h6>'
+            '<time datetime="2026-07-01 00:00:00">x</time></li>')
+
+    def test_stops_on_empty_page(self, monkeypatch):
+        calls = self._pages(monkeypatch, [self.ITEM.format(i=1), "<html></html>"])
+        items = k.news_feed("5326", max_pages=10)
+        assert [i["item_id"] for i in items] == ["1"]
+        assert len(calls) == 2                    # page 2 empty -> no page 3
+
+    def test_stops_when_nothing_new(self, monkeypatch):
+        calls = self._pages(monkeypatch, [self.ITEM.format(i=7)])
+        items = k.news_feed("5326", max_pages=10, known_ids={"7"})
+        assert items == []
+        assert len(calls) == 1                    # caught up on page 1
+
+    def test_announcements_gain_category(self, monkeypatch):
+        page = ('<li><h6><a href="/v2/announcements/view/11634777">'
+                "Changes in Sub. S-hldr's Int (Section 138)</a></h6></li>")
+        self._pages(monkeypatch, [page, ""])
+        items = k.announcements_feed("5326", max_pages=2)
+        assert items[0]["category"] == "insider_dealing"
+
+    def test_max_pages_caps_the_walk(self, monkeypatch):
+        calls = self._pages(monkeypatch, [self.ITEM.format(i=1),
+                                          self.ITEM.format(i=2),
+                                          self.ITEM.format(i=3)])
+        k.news_feed("5326", max_pages=2)
+        assert len(calls) == 2

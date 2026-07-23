@@ -511,6 +511,16 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
                 "shareholding": dossier["shareholding"],
                 "dividends": dossier["dividends"][:3],
             }
+            # PLAN §7.2 — durable history at zero extra requests: the stock
+            # page already embeds the newest items, so persisting them nightly
+            # accumulates a per-counter archive for EP-catalyst lookback.
+            # Depth beyond ~10 items comes from the dispatch-only backfill.
+            try:
+                db.save_counter_news(conn, c["ticker"], "news", dossier["news"])
+                db.save_counter_news(conn, c["ticker"], "announcement",
+                                     dossier["announcements"])
+            except Exception as e:
+                log.warning("counter_news persist failed for %s: %s", c["ticker"], e)
         entry = c.get("pivot") or c["price"]
         c["targets"] = reasoning.targets(entry, c["stop"]) if c.get("stop") else {}
         c["reasoning"] = reasoning.build(c)

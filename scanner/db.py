@@ -120,6 +120,51 @@ def save_bursa_fundamentals(conn, data: dict[str, dict]) -> None:
     conn.commit()
 
 
+def _ts(v):
+    """Tolerant ISO parse for feed timestamps; None rather than a guess."""
+    if not v:
+        return None
+    try:
+        import datetime as dt
+        return dt.datetime.fromisoformat(str(v).replace("T", " ").strip())
+    except ValueError:
+        return None
+
+
+def known_news_ids(conn, ticker: str, kind: str) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT item_id FROM counter_news WHERE ticker = %s AND kind = %s",
+                    (ticker, kind))
+        return {r[0] for r in cur.fetchall()}
+
+
+def save_counter_news(conn, ticker: str, kind: str, items: list[dict]) -> int:
+    """Per-counter news/announcement history (PLAN §7.2). UPSERT, never
+    DELETE. Items without an item_id (no /view/ link) are skipped — there is
+    nothing to dedupe them on. Returns rows written."""
+    n = 0
+    with conn.cursor() as cur:
+        for it in items:
+            if not it.get("item_id"):
+                continue
+            cur.execute(
+                """INSERT INTO counter_news
+                       (ticker, kind, item_id, title, url, source, category,
+                        published_at, date_text)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (kind, item_id) DO UPDATE
+                       SET title = EXCLUDED.title,
+                           category = EXCLUDED.category,
+                           published_at = COALESCE(EXCLUDED.published_at,
+                                                   counter_news.published_at)""",
+                (ticker, kind, it["item_id"], it["title"], it.get("url"),
+                 it.get("source") or None, it.get("category"),
+                 _ts(it.get("date")), (str(it.get("date") or "")[:40] or None)))
+            n += 1
+    conn.commit()
+    return n
+
+
 def apply_migrations(conn) -> None:
     """Run all db/migrations/*.sql in order. Safe to re-run (IF NOT EXISTS)."""
     import pathlib

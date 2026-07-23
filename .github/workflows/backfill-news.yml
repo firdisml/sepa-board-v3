@@ -1,0 +1,45 @@
+name: backfill-news
+
+# Dispatch-only deep history pull (PLAN §7.2). The nightly scan persists the
+# dossier's embedded items for free; this walks the paginated feeds back to
+# listing for one counter at a time. ~8s per page per feed — size max_pages
+# to the timeout.
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Internal ticker, e.g. 5326.KL"
+        required: true
+      max_pages:
+        description: "Feed pages per kind (8s each)"
+        default: "60"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scanner/requirements.txt
+      - name: Install dependencies
+        run: pip install -r scanner/requirements.txt
+      - name: Backfill feeds
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # inputs reach the shell via env, never interpolated (PLAN §11.1)
+          TICKER: ${{ inputs.ticker }}
+          MAX_PAGES: ${{ inputs.max_pages }}
+        run: >
+          python -m scanner.backfill_news --ticker "$TICKER"
+          --max-pages "$MAX_PAGES" --dump-html feed_pages
+      - name: Upload raw feed pages (parser fixtures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feed-pages
+          path: feed_pages/
+          if-no-files-found: ignore
