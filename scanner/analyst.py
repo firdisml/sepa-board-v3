@@ -20,7 +20,8 @@ Token usage is logged at the end of every run.
 
 Run: python -m scanner.analyst
 Env: DATABASE_URL, GEMINI_API_KEY; optional ANALYST_NOTES_MODEL,
-     ANALYST_BRIEF_MODEL, ANALYST_MAX_NOTES, ANALYST_SEARCH_MAX.
+     ANALYST_BRIEF_MODEL, ANALYST_MAX_NOTES, ANALYST_SEARCH_MAX,
+     ANALYST_PREFLIGHT=0 to skip the model canary.
 """
 from __future__ import annotations
 
@@ -171,6 +172,68 @@ def _call(client, models: list[str], payload: dict, max_tokens: int,
                 return None
     log.error("no model in %s produced a reply", models)
     return None
+
+
+# ---------------------------------------------------------------- preflight
+
+def _probe(models: list[str], ping, pause=time.sleep) -> dict[str, str]:
+    """Classify each unique model as 'ok' | 'busy' | 'dead' via one tiny
+    canary call. Google exposes no capacity endpoint, so the only way to read
+    tonight's load is to ask each model for a token and see what comes back.
+    A server-busy canary gets ONE more chance after a short pause — a single
+    503 is a blip, two in a row is tonight's weather. Errors are classified
+    by their `code` attribute (the `_call` idiom), so tests can drive this
+    with plain exceptions instead of SDK error constructors."""
+    status: dict[str, str] = {}
+    for m in dict.fromkeys(models):
+        for attempt in (1, 2):
+            try:
+                ping(m)
+                status[m] = "ok"
+            except Exception as e:
+                code = getattr(e, "code", None)
+                if code == 404:
+                    status[m] = "dead"        # wrong id — no second chance
+                elif attempt == 1:
+                    pause(5)
+                    continue                  # busy/blip — one retry
+                else:
+                    status[m] = "busy"        # 429/5xx/network, twice
+            break
+    return status
+
+
+def preflight(client) -> bool:
+    """Prune busy/dead models BEFORE the note loop instead of discovering
+    them one 15s sleep at a time across ~45 notes — the pre-loaded ladder
+    plus the in-run breaker is what keeps an overloaded preview model from
+    stretching the job toward the 60-min timeout. Canary cost: one ~8-token
+    call per configured model. Returns False only when NO notes model
+    survives: a red job in 30 seconds beats an hour of grinding to the same
+    nothing (the board itself is never touched — see the workflow comment)."""
+    if os.environ.get("ANALYST_PREFLIGHT", "1") == "0":
+        return True
+
+    def ping(model: str) -> None:
+        client.models.generate_content(
+            model=model, contents="ping",
+            config=genai_types.GenerateContentConfig(max_output_tokens=8))
+
+    t0 = time.monotonic()
+    status = _probe(NOTES_MODELS + BRIEF_MODELS, ping)
+    for m, s in status.items():
+        (log.info if s == "ok" else log.warning)("preflight: %s -> %s", m, s)
+        if s != "ok":
+            _dead_models.add(m)
+    log.info("preflight done in %.1fs", time.monotonic() - t0)
+    if all(m in _dead_models for m in NOTES_MODELS):
+        log.error("preflight: every notes model is busy/dead — aborting now "
+                  "rather than at the workflow timeout")
+        return False
+    if all(m in _dead_models for m in BRIEF_MODELS):
+        log.warning("preflight: brief ladder is down — notes will run, "
+                    "the morning brief will be missing tonight")
+    return True
 
 
 def _note_payload(c: dict, headlines: list[dict], regime_light: str | None = None,
@@ -355,6 +418,8 @@ def main() -> int:
         log.error("GEMINI_API_KEY not set")
         return 1
     client = make_client()
+    if not preflight(client):
+        return 1
     conn = db.connect()
     db.apply_migrations(conn)
 

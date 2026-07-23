@@ -1,5 +1,55 @@
 """AI analyst: pure-helper tests (no API calls, no DB)."""
-from scanner.analyst import _brief_payload, _clean_assessment, _extract_json, _note_payload
+from scanner.analyst import (_brief_payload, _clean_assessment, _extract_json,
+                             _note_payload, _probe)
+
+
+def _err(code=None):
+    e = RuntimeError("boom")
+    if code is not None:
+        e.code = code
+    return e
+
+
+class TestProbe:
+    def test_healthy_model_ok_first_try(self):
+        calls = []
+        assert _probe(["a"], calls.append, pause=lambda s: None) == {"a": "ok"}
+        assert calls == ["a"]
+
+    def test_404_is_dead_with_no_retry(self):
+        calls = []
+        def ping(m):
+            calls.append(m)
+            raise _err(404)
+        assert _probe(["a"], ping, pause=lambda s: None) == {"a": "dead"}
+        assert calls == ["a"]  # wrong id — a second try can't fix it
+
+    def test_busy_twice_is_busy(self):
+        calls = []
+        def ping(m):
+            calls.append(m)
+            raise _err(503)
+        assert _probe(["a"], ping, pause=lambda s: None) == {"a": "busy"}
+        assert calls == ["a", "a"]  # one retry, then condemned for the run
+
+    def test_single_blip_recovers_to_ok(self):
+        seen = []
+        def ping(m):
+            seen.append(m)
+            if len(seen) == 1:
+                raise _err(503)
+        assert _probe(["a"], ping, pause=lambda s: None) == {"a": "ok"}
+
+    def test_network_error_without_code_is_busy_not_dead(self):
+        def ping(m):
+            raise _err()  # no .code attribute at all
+        assert _probe(["a"], ping, pause=lambda s: None) == {"a": "busy"}
+
+    def test_duplicate_models_probed_once(self):
+        calls = []
+        assert _probe(["a", "b", "a"], calls.append, pause=lambda s: None) \
+            == {"a": "ok", "b": "ok"}
+        assert calls == ["a", "b"]
 
 
 class TestExtractJson:

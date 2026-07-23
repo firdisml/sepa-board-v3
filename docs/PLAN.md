@@ -365,7 +365,11 @@ the mechanical grade; Gemini only interprets them (core value #2).
 
 - Models: notes `gemini-3-flash-preview`, briefs+review `gemini-3.5-flash`
   (env-overridable; fallback chains; **dead-model memo + busy-model circuit
-  breaker (3 strikes) are load-bearing — keep**). Token budgets include
+  breaker (3 strikes) are load-bearing — keep**; preflight canary (ADDED
+  2026-07-23) probes every ladder model once at job start — no Google load
+  endpoint exists, so we measure — pruning busy models before the note loop
+  and turning an all-models-down night red in seconds, not at the 60-min
+  timeout; skip with ANALYST_PREFLIGHT=0). Token budgets include
   thinking: notes ≥6000, briefs ≥8000; retry a failed brief at 2× budget
   (v2 lesson: truncated JSON silently dropped the US brief).
 - Google Search grounding on every pick (free ≤5,000 prompts/mo, then $14/1k;
