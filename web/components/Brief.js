@@ -1,3 +1,5 @@
+"use client";
+
 const TONE = {
   "risk-on": ["good", "risk-on"],
   neutral: ["neutral", "neutral"],
@@ -6,13 +8,18 @@ const TONE = {
 const SECTOR_IMPACT = { tailwind: ["good", "▲"], headwind: ["bad", "▼"], watch: ["pivot", "●"] };
 const COUNTER_IMPACT = { positive: ["good", "▲"], negative: ["bad", "▼"], watch: ["pivot", "●"] };
 
-const tkr = (t) => (
-  <a key={t} className="tkr" href={`/stock/${encodeURIComponent(t)}`}>{t.replace(".KL", "")}</a>
-);
-
-export default function Brief({ brief }) {
-  const markets = ["US"].filter(
-    (m) => brief?.[m] && (brief[m].headline || brief[m].counters?.length || brief[m].bullets?.length)
+export default function Brief({ brief, onSelect }) {
+  const tkr = (t) => (
+    <button key={t} type="button" className="tkr" onClick={() => onSelect?.(t)}>
+      {t.replace(".KL", "")}
+    </button>
+  );
+  // was ["US"] — a leftover from the pre-MY-only build; brief is keyed by
+  // whichever markets actually ran (MY only, currently), so read its own keys
+  // instead of a hardcoded one that silently blanked this whole panel.
+  const markets = Object.keys(brief || {}).filter(
+    (m) => brief[m] && typeof brief[m] === "object" &&
+      (brief[m].headline || brief[m].counters?.length || brief[m].bullets?.length)
   );
   if (!markets.length) return null;
   return (
@@ -27,7 +34,7 @@ export default function Brief({ brief }) {
           return (
             <div key={m}>
               <div className="brief-mkt">
-                <b>US</b> <span className={`tag ${cls}`}>{label}</span>
+                <b>{m}</b> <span className={`tag ${cls}`}>{label}</span>
               </div>
               {b.headline && <div className="brief-headline">{b.headline}</div>}
               {b.action && <div className="brief-action">▶ {b.action}</div>}

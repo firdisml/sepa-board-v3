@@ -1,5 +1,5 @@
 export default function Shell({ regime, asOf, active = "/", children }) {
-  const my = regime?.MY, us = regime?.US;
+  const my = regime?.MY;
   const box = (label, r) => {
     if (!r) return null;
     const light = r.light || "yellow";
@@ -53,7 +53,7 @@ export default function Shell({ regime, asOf, active = "/", children }) {
           ))}
         </nav>
         <div className="side-label">Market regime</div>
-        {box("US — SPY/QQQ", us)}
+        {box("MY — KLCI", my)}
         <div className="side-foot">Scan: {asOf || "no data yet"}<br />Not financial advice.</div>
       </aside>
       <main className="main">{children}</main>

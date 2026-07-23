@@ -1,11 +1,7 @@
-import Link from "next/link";
-import { candidateDetail, latestBundle, latestBacktestStatsByMarket } from "@/lib/db";
+"use client";
 import { money } from "@/lib/format";
-import Shell from "@/components/Shell";
 import Candles from "@/components/Candles";
 import Calculator from "@/components/Calculator";
-
-export const dynamic = "force-dynamic";
 
 const LABELS = {
   price_above_150_200: "Price > 150 & 200 MA",
@@ -18,27 +14,10 @@ const LABELS = {
   rs_rank_ge_70: "RS rank ≥ 70 (funnel pool)",
 };
 
-export default async function Stock({ params }) {
-  const ticker = decodeURIComponent(params.ticker);
-  const [c, bundle, btByMarket] = await Promise.all([
-    candidateDetail(ticker), latestBundle(), latestBacktestStatsByMarket(),
-  ]);
-  const regime = bundle?.run?.regime || null;
-
-  if (!c) {
-    return (
-      <Shell regime={regime} asOf={bundle?.run?.run_date?.slice(0, 10)}>
-        <div className="panel"><h3>{ticker}</h3>
-          <div className="reasoning">Not on the current board — it either failed the screen or hasn't been scanned. <Link href="/" style={{ color: "var(--blue)" }}>Back to screener</Link></div>
-        </div>
-      </Shell>
-    );
-  }
-
-  // this row is the ticker's LAST appearance — which may predate the latest
-  // run. Everything on the page (price, chart, AI plan) is from that date, so
-  // say it loudly instead of letting old data pass as current.
-  const latestRun = bundle?.run?.run_date?.slice(0, 10);
+// Pure presentational: Board.js owns fetching (GET /api/stock/[ticker]) and
+// the selected-ticker state, so switching counters never re-navigates —
+// the board list beside this stays mounted and scroll position survives.
+export default function StockDetail({ c, regime, latestRun, btByMarket }) {
   const rowDate = c.as_of?.slice(0, 10);
   const stale = latestRun && rowDate && rowDate < latestRun;
   const checks = c.checks || {};
@@ -46,10 +25,6 @@ export default async function Stock({ params }) {
   const setup = c.setup || {};
   const contr = vcp.contractions_pct || [];
 
-  // backtest-calibrated levels: this market's latest run, in R-multiples of
-  // THIS counter's own risk (pivot − stop). Stop = exit when wrong; avg win =
-  // where winners typically ended; expectancy = the statistical average of
-  // all trades — a calibration line, NOT an exit target.
   const bt = btByMarket?.[c.market] || null;
   const bs = bt?.stats || {};
   let btLevels = [];
@@ -71,16 +46,13 @@ export default async function Stock({ params }) {
   }
 
   return (
-    <Shell regime={regime} asOf={c.as_of?.slice(0, 10)}>
+    <>
       <div className="page-head">
         <div>
           <h1>{c.ticker} {setup.ipo ? <span className="tag ipo">IPO</span> : null}</h1>
           <div className="asof">{c.name || ""} · {c.industry || c.sector || "—"}</div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div className="detail-price">{money(c.price, c.market)}</div>
-          <Link href="/" className="btn back-btn">← Screener</Link>
-        </div>
+        <div className="detail-price">{money(c.price, c.market)}</div>
       </div>
 
       {stale && (
@@ -114,7 +86,7 @@ export default async function Stock({ params }) {
             {bt && btLevels.length > 1 && (
               <div className="legend">
                 <span className="right">
-                  Dashed levels calibrated from the latest {"US"} backtest
+                  Dashed levels calibrated from the latest {c.market} backtest
                   ({bt.label || `#${bt.id}`}, {bs.trades ?? "?"} trades) on this counter's own risk
                   (pivot − stop). Expectancy is the average of ALL trades — a reality check, not an
                   exit target; exits are the stop (wrong) or selling into strength near avg win (right).
@@ -330,6 +302,6 @@ export default async function Stock({ params }) {
           </div>
         </div>
       </div>
-    </Shell>
+    </>
   );
 }

@@ -150,6 +150,34 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rs { font-family: var(--mono); font-weight: 700; }
 .rs.hot { color: var(--green); } .rs.ok { color: var(--ink); } .rs.weak { color: var(--red); }
 
+/* ---- workbench: board list (sidebar) + detail, one page, no navigation ---- */
+.workbench { display: flex; gap: 14px; align-items: flex-start; }
+.workbench-list {
+  width: 380px; flex: none; position: sticky; top: 24px;
+  display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 48px);
+}
+.workbench-list .filters { margin-bottom: 0; }
+.workbench-detail { flex: 1; min-width: 0; }
+
+.board-list {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  overflow: auto; flex: 1; min-height: 0;
+}
+.board-list table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.board-list th {
+  text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line);
+  color: var(--faint); font-size: 10px; font-weight: 600; white-space: nowrap;
+  position: sticky; top: 0; background: var(--panel);
+}
+.board-list td { padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.board-list .sym, .board-list .sym-name {
+  max-width: 130px; overflow: hidden; text-overflow: ellipsis;
+}
+.board-list tbody tr { cursor: pointer; }
+.board-list tbody tr:hover { background: var(--panel-2); }
+.board-list tbody tr.selected { background: var(--panel-2); box-shadow: inset 3px 0 0 0 var(--pink); }
+.board-list tbody tr:last-child td { border-bottom: none; }
+
 /* ---- detail page ---- */
 .detail-grid { display: grid; grid-template-columns: 1.7fr 1fr; gap: 14px; align-items: start; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; }
@@ -158,11 +186,6 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 .panel h3 { font-size: 13px; font-weight: 700; margin: 0 0 12px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .panel h3 .tag { font-weight: 600; }
 .detail-price { font-family: var(--mono); font-size: 22px; font-weight: 700; }
-.back-btn {
-  display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px;
-  font-size: 12.5px; font-weight: 600; text-decoration: none; border-radius: 6px;
-  white-space: nowrap;
-}
 .legend { display: flex; gap: 16px; font-size: 11.5px; color: var(--dim); margin-top: 8px; flex-wrap: wrap; }
 .legend .l20 { color: #3dd6c3; } .legend .l50 { color: var(--blue); } .legend .l150 { color: var(--amber); } .legend .l200 { color: var(--purple); }
 .legend .right { margin-left: auto; }
@@ -218,12 +241,17 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 .imp.good { color: var(--green); }
 .imp.bad { color: var(--red); }
 .imp.pivot { color: var(--amber); }
+/* now rendered as <button> (onClick selects a counter in place, no href) —
+   reset out of the global brutalist button rule (border/uppercase/hover-lift
+   applies to any bare `button`) so this stays the small inline chip it was
+   as an <a>. */
 .tkr {
   font-family: var(--mono); font-size: 11.5px; font-weight: 700; color: var(--blue);
-  background: #1b2340; border-radius: 5px; padding: 1px 6px; margin-right: 4px;
-  white-space: nowrap;
+  background: #1b2340; border: none; border-radius: 5px; padding: 1px 6px;
+  margin-right: 4px; white-space: nowrap; text-transform: none; letter-spacing: normal;
 }
-.tkr:hover { color: #fff; background: var(--blue); }
+.tkr:hover { color: #fff; background: var(--blue); transform: none; box-shadow: none; }
+.tkr:active { transform: none; box-shadow: none; }
 
 /* ---- reasoning sections + AI trade plan (stock page) ---- */
 .rsec { margin-bottom: 10px; padding: 8px 11px; border-left: 3px solid var(--line); border-radius: 6px; background: var(--panel-2); }
@@ -291,6 +319,8 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 @media (max-width: 1100px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .detail-grid { grid-template-columns: 1fr; }
+  .workbench { flex-direction: column; }
+  .workbench-list { width: 100%; position: static; max-height: 420px; }
 }
 @media (max-width: 900px) {
   /* markets stack instead of squeezing side by side */

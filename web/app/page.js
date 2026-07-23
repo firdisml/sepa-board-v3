@@ -1,20 +1,18 @@
-import { latestBundle } from "@/lib/db";
+import { latestBundle, latestBacktestStatsByMarket } from "@/lib/db";
 import Shell from "@/components/Shell";
-import Screener from "@/components/Screener";
-import Brief from "@/components/Brief";
+import Board from "@/components/Board";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const bundle = await latestBundle();
+  const [bundle, btByMarket] = await Promise.all([
+    latestBundle(), latestBacktestStatsByMarket(),
+  ]);
   const regime = bundle?.run?.regime || null;
   return (
     <Shell regime={regime} asOf={bundle?.run?.run_date?.slice(0, 10)}>
       {bundle
-        ? <>
-            <Brief brief={bundle.run?.ai_brief} />
-            <Screener run={bundle.run} candidates={bundle.candidates} />
-          </>
+        ? <Board run={bundle.run} candidates={bundle.candidates} regime={regime} btByMarket={btByMarket} />
         : (
           <div className="panel">
             <h3>No scan data yet</h3>
