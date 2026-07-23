@@ -95,26 +95,75 @@ def save_ticker_meta(conn, fresh: dict) -> None:
 
 
 def load_bursa_fundamentals(conn, max_age_days: int = 60) -> dict[str, dict]:
-    """Cached Bursa fundamentals (weekly Apify refresh). Entries older than
-    max_age_days are ignored — a dead refresh job degrades to Yahoo, never
-    serves months-old numbers as current."""
+    """Cached Bursa fundamentals, keyed by ticker, with each entry's age.
+
+    Quarterly numbers change four times a year, so a cached figure is as
+    correct today as it was last week — but a SCRAPE is not guaranteed to
+    succeed tonight. Without this fallback a throttled fetch overwrites good
+    stored fundamentals with NULL, and the board silently loses every grade
+    (observed 2026-07-23: all 39 candidates went to NULL after one bad run).
+
+    Entries older than max_age_days are dropped rather than served: stale is
+    acceptable, indefinitely stale presented as current is not. `_age_days`
+    is attached so the UI can say how old the number is.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT ticker, data FROM bursa_fundamentals
+            """SELECT ticker, data,
+                      EXTRACT(day FROM now() - updated_at)::int AS age
+               FROM bursa_fundamentals
                WHERE updated_at > now() - make_interval(days => %s)""",
             (max_age_days,),
         )
-        return {t: d for t, d in cur.fetchall()}
+        out = {}
+        for t, d, age in cur.fetchall():
+            if isinstance(d, dict):
+                d = {**d, "_age_days": age}
+            out[t] = d
+        return out
 
 
 def save_bursa_fundamentals(conn, data: dict[str, dict]) -> None:
     with conn.cursor() as cur:
         for t, d in data.items():
+            # never persist the derived age back into the cache
+            d = {k: v for k, v in (d or {}).items() if k != "_age_days"}
             cur.execute(
                 """INSERT INTO bursa_fundamentals (ticker, data)
                    VALUES (%s, %s)
                    ON CONFLICT (ticker) DO UPDATE SET data = EXCLUDED.data,
                        updated_at = now()""",
+                (t, json.dumps(d)),
+            )
+    conn.commit()
+
+
+def load_street_cache(conn, max_age_days: int = 7) -> dict[str, dict]:
+    """Cached dossier street blocks (announcements, filings, dividends).
+
+    Same reasoning as the fundamentals cache: filings are immutable once made,
+    so yesterday's copy is not wrong — only possibly incomplete — whereas a
+    failed fetch that overwrites them leaves the counter looking like it has
+    never filed anything.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT ticker, data FROM street_cache
+               WHERE page = 'dossier'
+                 AND fetched_at > now() - make_interval(days => %s)""",
+            (max_age_days,),
+        )
+        return {t: d for t, d in cur.fetchall()}
+
+
+def save_street_cache(conn, data: dict[str, dict]) -> None:
+    with conn.cursor() as cur:
+        for t, d in data.items():
+            cur.execute(
+                """INSERT INTO street_cache (ticker, page, data)
+                   VALUES (%s, 'dossier', %s)
+                   ON CONFLICT (ticker, page) DO UPDATE SET data = EXCLUDED.data,
+                       fetched_at = now()""",
                 (t, json.dumps(d)),
             )
     conn.commit()

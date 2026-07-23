@@ -141,6 +141,12 @@ export default function SidePanel({ c }) {
             </div>
           ) : <p className="side-p dim">No parseable financials — grade withheld rather than guessed.</p>
         )}
+        {tab === "Fundamentals" && f._age_days > 0 && (
+          <p className="side-p dim" style={{ marginTop: 8 }}>
+            From cache, {f._age_days}d old — tonight&apos;s fetch didn&apos;t parse.
+            Quarterly figures change four times a year, so these are stale, not wrong.
+          </p>
+        )}
       </div>
     </div>
   );

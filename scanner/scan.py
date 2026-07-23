@@ -491,6 +491,16 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         for mkt, ranks in ranks_by_market.items()
     }
 
+    # last-known-good, so a throttled night degrades instead of erasing
+    try:
+        cached_fund = db.load_bursa_fundamentals(conn)
+        cached_street = db.load_street_cache(conn)
+    except Exception as e:
+        log.warning("cache load failed (%s) — proceeding without fallback", e)
+        cached_fund, cached_street = {}, {}
+    fresh_fund: dict[str, dict] = {}
+    fresh_street: dict[str, dict] = {}
+
     session = requests.Session()
     for c in candidates:
         c["group_rs"] = group_rs_by_market.get(c["market"], {}).get(c.get("industry"))
@@ -499,7 +509,24 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
             dossier = klse_client.dossier(klse_client.code_of(c["ticker"]), session=session)
         except Exception as e:
             log.info("dossier unavailable for %s: %s", c["ticker"], e)
-        c["fundamentals"] = fundamentals.from_dossier(dossier) if dossier else None
+
+        # CACHE-OR-KEEP, never overwrite-with-nothing. A scrape is a best-effort
+        # network call against a throttled source; a failed one must not erase
+        # numbers we already had. On 2026-07-23 one throttled run wrote NULL
+        # fundamentals over all 39 candidates and every grade vanished from the
+        # board. Quarterly figures change four times a year, so last night's
+        # copy is not wrong — it is merely older, and the UI says by how much.
+        fresh = fundamentals.from_dossier(dossier) if dossier else None
+        if fresh:
+            c["fundamentals"] = fresh
+            fresh_fund[c["ticker"]] = fresh
+        else:
+            cached = cached_fund.get(c["ticker"])
+            c["fundamentals"] = cached
+            if cached:
+                log.info("%s: fundamentals from cache (%sd old)",
+                         c["ticker"], cached.get("_age_days"))
+
         c["earnings"] = _earnings_info(dossier)
         # Headlines carry their source URL so the UI links out instead of
         # asking the reader to trust an unattributed summary.
@@ -511,6 +538,12 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
                 "shareholding": dossier["shareholding"],
                 "dividends": dossier["dividends"][:3],
             }
+            fresh_street[c["ticker"]] = c["setup"]["street"]
+        else:
+            street = cached_street.get(c["ticker"])
+            if street:
+                c["setup"]["street"] = {**street, "stale": True}
+                c["news"] = c["news"] or []
             # PLAN §7.2 — durable history at zero extra requests: the stock
             # page already embeds the newest items, so persisting them nightly
             # accumulates a per-counter archive for EP-catalyst lookback.
@@ -525,6 +558,19 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         c["targets"] = reasoning.targets(entry, c["stop"]) if c.get("stop") else {}
         c["reasoning"] = reasoning.build(c)
         c["reasoning_sections"] = reasoning.build_sections(c)
+
+    # refresh the cache only with what actually parsed tonight
+    if fresh_fund or fresh_street:
+        try:
+            db.save_bursa_fundamentals(conn, fresh_fund)
+            db.save_street_cache(conn, fresh_street)
+            log.info("cached %d fundamentals, %d street blocks",
+                     len(fresh_fund), len(fresh_street))
+        except Exception as e:
+            log.warning("cache write failed: %s", e)
+    graded = sum(1 for c in candidates if c.get("fundamentals"))
+    log.info("fundamentals: %d/%d candidates (%d fresh, %d from cache)",
+             graded, len(candidates), len(fresh_fund), graded - len(fresh_fund))
 
 
 def evaluate_open_positions(conn, run_date: str, data: dict) -> None:
