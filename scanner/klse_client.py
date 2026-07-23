@@ -468,9 +468,16 @@ ANN_FEED_PATH = "/v2/announcements/stock/{code}"
 _VIEW_ID = re.compile(r"/v2/(?:news|announcements)/view/(\d+)")
 
 
-def _feed_url(path: str, code: str, page: int) -> str:
+def _feed_url(path: str, code: str, page: int, style: str = "path") -> str:
+    """News pages with a path suffix (/5326/2); announcements IGNORE that
+    suffix and silently serve page 1 again — their real pagination is
+    ?page=2 (both verified live 2026-07-23). A non-advancing feed is also
+    caught defensively in _feed, so a future style change degrades to a
+    one-page fetch instead of N identical ones."""
     url = BASE + path.format(code=code)
-    return url if page <= 1 else f"{url}/{page}"
+    if page <= 1:
+        return url
+    return f"{url}?page={page}" if style == "query" else f"{url}/{page}"
 
 
 def _get(url: str, session: requests.Session | None = None) -> str:
@@ -578,30 +585,32 @@ def _feed_ts(v) -> dt.datetime | None:
 
 
 def _feed(path: str, code: str, max_pages: int, session, known_ids,
-          max_age_days: int | None = None) -> list[dict]:
-    """Walk a feed newest-first. Stops at: an empty page (end of history), a
-    page with nothing new (incremental refresh, only when known_ids given),
-    or a page entirely older than max_age_days (dated feeds — the AI reads a
-    2-3 month window, not archaeology). Each page costs one throttled
-    request — callers size max_pages accordingly."""
+          max_age_days: int | None = None, page_style: str = "path") -> list[dict]:
+    """Walk a feed newest-first. Stops at: a page with no ids we haven't seen
+    this walk (end of history, OR a feed serving the same page repeatedly —
+    the announcements /{page} trap), a page entirely older than max_age_days
+    (dated feeds — the AI reads a 2-3 month window, not archaeology), or a
+    page with nothing new vs known_ids (incremental refresh). Each page costs
+    one throttled request — callers size max_pages accordingly."""
     known = set(known_ids or ())
     cutoff = (dt.datetime.now() - dt.timedelta(days=max_age_days)
               if max_age_days else None)
+    seen: set[str] = set()
     out: list[dict] = []
     for page in range(1, max_pages + 1):
-        items = parse_feed(_get(_feed_url(path, code, page), session=session))
-        if not items:
-            break
+        items = parse_feed(_get(_feed_url(path, code, page, page_style),
+                                session=session))
+        unseen = [i for i in items if i["item_id"] not in seen]
+        if not unseen:
+            break                  # empty page or a non-advancing feed
+        seen.update(i["item_id"] for i in unseen)
         if cutoff:
-            in_window = []
-            for i in items:
-                ts = _feed_ts(i["date"])
-                if ts is None or ts >= cutoff:
-                    in_window.append(i)
+            in_window = [i for i in unseen
+                         if (ts := _feed_ts(i["date"])) is None or ts >= cutoff]
             if not in_window:
                 break              # the whole page pre-dates the window
-            items = in_window
-        fresh = [i for i in items if i["item_id"] not in known]
+            unseen = in_window
+        fresh = [i for i in unseen if i["item_id"] not in known]
         out.extend(fresh)
         if known and not fresh:
             break                  # caught up — nothing new on this page
@@ -622,7 +631,7 @@ def announcements_feed(code: str, max_pages: int = 1,
     """max_age_days is accepted but toothless here — announcement items carry
     no year, so _feed_ts returns None and the page cap is the real bound."""
     items = _feed(ANN_FEED_PATH, code, max_pages, session, known_ids,
-                  max_age_days=max_age_days)
+                  max_age_days=max_age_days, page_style="query")
     for it in items:
         it["category"] = classify(it["title"])
         it["source"] = ""   # announcements are Bursa filings — no publisher

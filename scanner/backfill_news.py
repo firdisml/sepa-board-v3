@@ -61,7 +61,11 @@ def main() -> int:
         # page 1 the moment the newest items are already stored). The window
         # bounds the walk; the UPSERT dedupes and refreshes titles/dates.
         known = db.known_news_ids(conn, args.ticker, kind)
-        items = feed(code, max_pages=args.max_pages, session=session,
+        # Announcements carry no year, so pages are the only age proxy:
+        # ~30 filings/page and near-daily EPF filings on big caps make
+        # 5 pages ≈ several months — the news window's spiritual twin.
+        pages = args.max_pages if kind == "news" else min(args.max_pages, 5)
+        items = feed(code, max_pages=pages, session=session,
                      max_age_days=args.max_age_days)
         wrote[kind] = len([i for i in items if i["item_id"] not in known])
         db.save_counter_news(conn, args.ticker, kind, items)

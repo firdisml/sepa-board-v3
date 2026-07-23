@@ -280,6 +280,21 @@ class TestFeedWalk:
         assert [i["item_id"] for i in items] == ["1"]
         assert len(calls) == 2   # page 2 pre-dates the window -> page 3 never fetched
 
+    def test_non_advancing_feed_stops_after_one_extra_page(self, monkeypatch):
+        # the announcements /{page} trap: same page served for every page
+        # number must cost 2 requests and yield 1 item, not 15 duplicates
+        calls = self._pages(monkeypatch, [self.ITEM.format(i=1)])
+        items = k.news_feed("5326", max_pages=15)
+        assert [i["item_id"] for i in items] == ["1"]
+        assert len(calls) == 2
+
+    def test_feed_url_styles(self):
+        base = "https://www.klsescreener.com"
+        assert k._feed_url(k.NEWS_FEED_PATH, "5326", 1) == base + "/v2/news/stock/5326"
+        assert k._feed_url(k.NEWS_FEED_PATH, "5326", 3) == base + "/v2/news/stock/5326/3"
+        assert (k._feed_url(k.ANN_FEED_PATH, "5326", 3, "query")
+                == base + "/v2/announcements/stock/5326?page=3")
+
     def test_undated_items_survive_the_age_window(self, monkeypatch):
         # announcements carry no year — unknown age must never be dropped
         page = ('<a href="/v2/announcements/view/5" class="announcement-item">'
