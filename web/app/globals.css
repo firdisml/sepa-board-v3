@@ -375,6 +375,140 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 
 /* ============================================================
+   ACTION-FIRST BOARD — one grid for the whole page.
+   Every section renders the same <colgroup> under table-layout:
+   fixed, so columns line up ACROSS sections, not merely within
+   one. Change a width in BoardTable.COLS and the entire page
+   re-aligns; nothing here hardcodes a second copy of it.
+   ============================================================ */
+
+.dash { display: flex; flex-direction: column; gap: 14px; }
+
+.dash-topbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding-bottom: 12px; border-bottom: var(--bw) solid var(--ink);
+}
+.dash-topbar .asof {
+  margin-left: auto; font-family: var(--mono); font-size: 11px;
+  color: var(--dim); white-space: nowrap;
+}
+
+/* ---- sections ---- */
+.bsec { border: var(--bw) solid var(--ink); background: var(--panel); }
+.bsec + .bsec { margin-top: 0; }
+.bsec-h {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+}
+.bsec-h.clickable { cursor: pointer; user-select: none; }
+.bsec-h h2 {
+  margin: 0; font-family: var(--display); font-size: 13px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 1px;
+}
+.bsec-h .caret { font-size: 11px; color: var(--dim); width: 10px; }
+.bsec-n {
+  font-family: var(--mono); font-size: 11px; padding: 1px 7px;
+  border: 1.5px solid var(--ink); min-width: 26px; text-align: center;
+}
+.bsec-note {
+  font-size: 11px; color: var(--dim); margin-left: auto;
+  font-family: var(--mono); white-space: nowrap;
+}
+/* the two sections that answer "what do I do" carry the loud treatment */
+.bsec.act { box-shadow: var(--sh-hero); }
+.bsec.act .bsec-h { background: var(--green); color: #121210; border-bottom-color: var(--ink); }
+.bsec.act .bsec-n { border-color: #121210; }
+.bsec.near { box-shadow: var(--sh-strip); }
+.bsec.near .bsec-h { background: var(--yellow); color: #121210; border-bottom-color: var(--ink); }
+.bsec.near .bsec-n { border-color: #121210; }
+
+/* ---- the grid ---- */
+.bt-wrap { overflow-x: auto; }
+table.bt {
+  table-layout: fixed;      /* obey the colgroup exactly — no auto-sizing */
+  width: 100%;
+  min-width: 1180px;        /* below this the columns would compress; scroll instead */
+  border-collapse: collapse;
+  font-size: 12px;
+}
+table.bt th, table.bt td {
+  padding: 0 10px;
+  height: 34px;             /* fixed row height — ragged rows are the enemy */
+  border-bottom: 1px solid var(--line);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  vertical-align: middle;
+}
+table.bt th {
+  font-family: var(--mono); font-size: 10px; font-weight: 400;
+  text-transform: uppercase; letter-spacing: 0.6px; color: var(--dim);
+  height: 30px; position: sticky; top: 0; background: var(--panel); z-index: 1;
+}
+.ta-l { text-align: left; }
+.ta-r { text-align: right; }
+/* every figure monospaced and tabular so digits sit in the same columns
+   down the page — the whole reason numbers are readable at a glance */
+table.bt td.num, table.bt .rs, table.bt .frac {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+table.bt td.num.pos { color: var(--green); }
+table.bt td.num.neg { color: var(--red); }
+table.bt td .dash { color: var(--faint); }
+table.bt tbody tr { cursor: pointer; }
+table.bt tbody tr:hover { background: rgba(245, 243, 234, 0.05); }
+table.bt tbody tr.selected { background: rgba(255, 144, 232, 0.10); }
+table.bt tbody tr.selected td { border-bottom-color: var(--pink); }
+
+/* symbol cell: ticker + name on ONE line, name truncated. Two lines would
+   make row height depend on whether a name exists, and ragged heights are
+   exactly what breaks a scan-read. */
+table.bt .sym { font-weight: 700; font-family: var(--mono); }
+table.bt .sym-name { color: var(--faint); font-size: 11px; margin-left: 6px; }
+
+/* tags: uniform box so a row with five tags is the same height as one with
+   none, and the columns after them never shift */
+table.bt .tagcell { line-height: 1; }
+table.bt .tag {
+  display: inline-block; vertical-align: middle;
+  font-family: var(--mono); font-size: 9.5px; line-height: 14px;
+  padding: 0 4px; margin-right: 3px; border: 1px solid currentColor;
+  text-transform: uppercase; letter-spacing: 0.3px; background: transparent;
+}
+table.bt .tag.ep { background: var(--pink); color: #121210; border-color: var(--pink); }
+table.bt .tag.good { color: var(--green); }
+table.bt .tag.bad { color: var(--red); }
+table.bt .tag.pivot { color: var(--yellow); }
+table.bt .tag.ipo { color: var(--blue); }
+table.bt .tag.neutral { color: var(--dim); }
+table.bt .rs.hot { color: var(--green); }
+table.bt .rs.ok { color: var(--ink); }
+table.bt .rs.weak { color: var(--dim); }
+table.bt .pivot-v { color: var(--yellow); }
+
+/* trend dots: fixed 8-slot track so the n/8 fraction lands in the same spot
+   on every row regardless of how many rules were evaluated */
+table.bt .dots { display: inline-flex; align-items: center; gap: 2px; }
+table.bt .dot {
+  width: 5px; height: 5px; background: var(--red); opacity: .5; flex: none;
+}
+table.bt .dot.ok { background: var(--green); opacity: 1; }
+table.bt .frac { font-size: 10px; color: var(--dim); margin-left: 5px; }
+
+table.bt td.empty {
+  text-align: center; color: var(--dim); height: 44px;
+  font-family: var(--mono); font-size: 11.5px;
+}
+
+/* inline detail rides inside the row it belongs to */
+tr.detail-row td { padding: 0; height: auto; white-space: normal; background: var(--bg); }
+tr.detail-row > td > * { margin: 0; }
+
+@media (max-width: 900px) {
+  .bsec.act, .bsec.near { box-shadow: 3px 3px 0 0 var(--ink); }
+  .dash-topbar .asof { margin-left: 0; width: 100%; }
+}
+
+/* ============================================================
    DARK BRUTALIST LAYER (PLAN §8.1)
    Applied last so it overrides the inherited v2 surface styling
    without every component needing to be rewritten.

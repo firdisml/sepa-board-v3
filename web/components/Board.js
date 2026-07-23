@@ -1,65 +1,76 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
-import BoardList from "@/components/BoardList";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { COLS, Cols, Head, Row } from "@/components/BoardTable";
 import StockDetail from "@/components/StockDetail";
 import Brief from "@/components/Brief";
 
-// filters survive re-selection (per-tab; a fresh tab starts clean).
-// localStorage would resurrect stale filters days later and make the board
-// look mysteriously empty.
 const FILTER_KEY = "sepa-screener-filters";
 
-// One page, dashboard-dense: a topbar line (search + board totals + two
-// opt-in drawers for the brief/maturing strip, collapsed by default so they
-// don't push the actual board down), then list-sidebar + detail side by
-// side, each pane scrolling on its own — the page itself shouldn't have to.
+/* ACTION-FIRST. The page answers "what do I do tomorrow" in reading order:
+   regime (how much may I risk) -> buy points -> what is nearly ready -> the
+   AI read -> everything else, collapsed.
+
+   The previous layout led with a search box and a five-number stat line in
+   which "0 swing-ready" — the actual answer — was the fourth item in grey.
+   Sections now carry their own counts, and an empty BUY section says so in
+   words rather than leaving you to infer it from a list that looks busy.
+
+   Nothing is dropped to achieve this: every column the old screener had is
+   still on every row (see BoardTable), and all sections share one fixed
+   column grid so the whole page aligns as a single table. */
 export default function Board({ run, candidates, regime, btByMarket }) {
-  const [minRS, setMinRS] = useState(70);
+  const [minRS, setMinRS] = useState(0);
   const [vcpOnly, setVcpOnly] = useState(false);
   const [fullOnly, setFullOnly] = useState(false);
   const [q, setQ] = useState("");
-  const [showBrief, setShowBrief] = useState(false);
-  const [showMaturing, setShowMaturing] = useState(false);
-  // top of the board-sorted list by default — same value on server and first
-  // client render (both read the same `candidates` prop), so there is no
-  // hydration mismatch and no flash of an empty pane before the mount effect
-  // below can apply a ?t= deep link.
-  const [selected, setSelected] = useState(() => candidates?.[0]?.ticker ?? null);
+  const [open, setOpen] = useState({ watch: true, position: false, forming: false });
+  const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const restored = useRef(false);
 
-  const rows = useMemo(() => (candidates || []).map((c) => ({
-    ...c,
-    passAll: Object.values(c.checks || {}).every((x) => x.pass),
-    isVcp: !!c.vcp?.vcp,
-  })), [candidates]);
+  const rows = useMemo(() => (candidates || []).map((c) => {
+    const toPiv = c.pivot ? (c.price / c.pivot - 1) * 100 : null;
+    return {
+      ...c,
+      passAll: Object.values(c.checks || {}).every((x) => x.pass),
+      isVcp: !!c.vcp?.vcp,
+      toPiv,
+      antic: c.setup?.anticipation?.score ?? null,
+    };
+  }), [candidates]);
 
-  const filtered = rows.filter((r) =>
+  const match = (r) =>
     (r.rs_rank ?? 0) >= minRS &&
     (!vcpOnly || r.isVcp) &&
     (!fullOnly || r.passAll) &&
     (q === "" || r.ticker.toLowerCase().includes(q.toLowerCase()) ||
-      (r.name || "").toLowerCase().includes(q.toLowerCase()))
-  );
+      (r.name || "").toLowerCase().includes(q.toLowerCase()));
 
-  // restore AFTER mount (server HTML renders the defaults, so reading
-  // storage/location during the first render would be a hydration mismatch).
-  // ?t=TICKER makes a selection shareable; absent that, land on the top pick
-  // so the page is never a blank pane on first load.
+  const visible = rows.filter(match);
+
+  // BUY: at a buy point now. CLOSE: has a pivot and price is within reach of
+  // it — sorted by the anticipation score when the engine computed one, else
+  // by raw distance, so the closest thing to a decision sits at the top.
+  const buy = visible.filter((r) => r.bucket === "swing");
+  const close = visible
+    .filter((r) => r.bucket !== "swing" && r.toPiv != null && r.toPiv > -12 && r.toPiv < 3)
+    .sort((a, b) => (b.antic ?? -1) - (a.antic ?? -1) || Math.abs(a.toPiv) - Math.abs(b.toPiv))
+    .slice(0, 12);
+  const closeSet = new Set(close.map((r) => r.ticker));
+  const rest = (bucket) => visible.filter((r) => r.bucket === bucket && !closeSet.has(r.ticker));
+
   useEffect(() => {
     try {
       const s = JSON.parse(sessionStorage.getItem(FILTER_KEY) || "null");
       if (s) {
-        setMinRS(Number.isFinite(s.minRS) ? s.minRS : 70);
-        setVcpOnly(!!s.vcpOnly);
-        setFullOnly(!!s.fullOnly);
-        setQ(s.q ?? "");
+        setMinRS(Number.isFinite(s.minRS) ? s.minRS : 0);
+        setVcpOnly(!!s.vcpOnly); setFullOnly(!!s.fullOnly); setQ(s.q ?? "");
       }
     } catch { /* corrupt storage — keep defaults */ }
     restored.current = true;
     const t = new URLSearchParams(window.location.search).get("t");
-    setSelected(t || rows[0]?.ticker || null);
+    if (t) setSelected(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -70,11 +81,8 @@ export default function Board({ run, candidates, regime, btByMarket }) {
     } catch { /* private mode — filters just won't persist */ }
   }, [minRS, vcpOnly, fullOnly, q]);
 
-  // plain history.replaceState, not next/navigation's router: this is a
-  // client-only bookmark update, and routing it through the router would
-  // risk a server re-render of a page that already has everything it needs.
   useEffect(() => {
-    if (!selected) return;
+    if (!selected) { setDetail(null); return; }
     window.history.replaceState(null, "", `/?t=${encodeURIComponent(selected)}`);
     let cancelled = false;
     setLoading(true);
@@ -85,92 +93,99 @@ export default function Board({ run, candidates, regime, btByMarket }) {
     return () => { cancelled = true; };
   }, [selected]);
 
-  const passing = rows.filter((r) => r.passAll).length;
-  const vcps = rows.filter((r) => r.isVcp).length;
-  const swings = rows.filter((r) => r.bucket === "swing").length;
-  const avgRS = passing
-    ? Math.round(rows.filter((r) => r.passAll).reduce((s, r) => s + (r.rs_rank || 0), 0) / passing)
-    : "—";
+  const pick = (t) => setSelected((cur) => (cur === t ? null : t));
 
-  const maturing = rows
-    .filter((r) => r.setup?.anticipation)
-    .sort((a, b) => (b.setup.anticipation.score || 0) - (a.setup.anticipation.score || 0))
-    .slice(0, 10);
+  // one <table> per section, all sharing COLS — the expanded detail rides
+  // inside the row it belongs to, so the chart never loses its context
+  const Section = ({ id, title, note, list, tone, collapsible }) => {
+    const isOpen = !collapsible || open[id];
+    return (
+      <section className={"bsec" + (tone ? ` ${tone}` : "")}>
+        <header
+          className={"bsec-h" + (collapsible ? " clickable" : "")}
+          onClick={collapsible ? () => setOpen({ ...open, [id]: !isOpen }) : undefined}
+        >
+          {collapsible && <span className="caret">{isOpen ? "▾" : "▸"}</span>}
+          <h2>{title}</h2>
+          <span className="bsec-n">{list.length}</span>
+          {note && <span className="bsec-note">{note}</span>}
+        </header>
+        {isOpen && (
+          <div className="bt-wrap">
+            <table className="bt">
+              <Cols />
+              <Head />
+              <tbody>
+                {list.length === 0 && (
+                  <tr><td colSpan={COLS.length} className="empty">
+                    {id === "buy"
+                      ? "Nothing at a buy point today. Cash is a position."
+                      : "No counters here."}
+                  </td></tr>
+                )}
+                {list.map((r) => (
+                  <Fragment key={r.ticker + r.market}>
+                    <Row r={r} selected={selected} onSelect={pick} />
+                    {selected === r.ticker && (
+                      <tr className="detail-row">
+                        <td colSpan={COLS.length}>
+                          {loading && !detail && <div className="panel">Loading {selected}…</div>}
+                          {detail && (
+                            <StockDetail c={detail} regime={regime}
+                              latestRun={run?.run_date?.slice(0, 10)} btByMarket={btByMarket} />
+                          )}
+                          {!loading && !detail && (
+                            <div className="panel">No stored detail for {selected}.</div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    );
+  };
+
   const hasBrief = Object.keys(run?.ai_brief || {}).some(
-    (m) => run.ai_brief[m] && typeof run.ai_brief[m] === "object"
-  );
+    (m) => run.ai_brief[m] && typeof run.ai_brief[m] === "object");
 
   return (
     <div className="dash">
       <div className="dash-topbar">
-        <input className="search" placeholder="Search symbol or name…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <span className="stat-line">
-          <b>{rows.length}</b> counters · <b>{passing}</b> pass template ·{" "}
-          <b>{vcps}</b> VCP · <b>{swings}</b> swing-ready · avg RS <b>{avgRS}</b>
+        <input className="search" placeholder="Search symbol or name…"
+               value={q} onChange={(e) => setQ(e.target.value)} />
+        <button className={"chip" + (fullOnly ? " on" : "")}
+                onClick={() => setFullOnly(!fullOnly)}>Full template</button>
+        <button className={"chip" + (vcpOnly ? " on" : "")}
+                onClick={() => setVcpOnly(!vcpOnly)}>VCP only</button>
+        <span className="rs-slider">
+          RS ≥ <input type="range" min="0" max="99" value={minRS}
+                      onChange={(e) => setMinRS(+e.target.value)} />
+          <span className="val">{minRS}</span>
         </span>
-        <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          {hasBrief && (
-            <button className={"chip" + (showBrief ? " on" : "")} onClick={() => setShowBrief(!showBrief)}>
-              AI brief
-            </button>
-          )}
-          {maturing.length > 0 && (
-            <button className={"chip" + (showMaturing ? " on" : "")} onClick={() => setShowMaturing(!showMaturing)}>
-              Maturing ({maturing.length})
-            </button>
-          )}
-        </span>
-        <span className="asof">as of {run?.run_date?.slice(0, 10)}</span>
+        <span className="asof">{visible.length} of {rows.length} · as of {run?.run_date?.slice(0, 10)}</span>
       </div>
 
-      {showBrief && (
-        <div className="dash-drawer">
-          <Brief brief={run?.ai_brief} onSelect={setSelected} />
-        </div>
-      )}
-      {showMaturing && (
-        <div className="dash-drawer panel" style={{ padding: "12px 18px" }}>
-          <div className="rsec-t" style={{ marginBottom: 8 }}>🎯 Breakout anticipation — closest to ready first</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {maturing.map((r) => (
-              <button key={r.ticker + r.market} className="tkr" onClick={() => setSelected(r.ticker)}
-                 title={`anticipation score ${r.setup.anticipation.score}/100`}>
-                {r.ticker} · {r.setup.anticipation.pct_to_pivot}% to pivot
-              </button>
-            ))}
-          </div>
-        </div>
+      <Section id="buy" title="Buy tomorrow" tone="act" list={buy}
+               note="at a buy point — entry, stop and size on the row" />
+
+      <Section id="close" title="Close to ready" tone="near" list={close}
+               note="base built, price approaching the pivot" />
+
+      {hasBrief && (
+        <section className="bsec">
+          <header className="bsec-h"><h2>AI read</h2></header>
+          <Brief brief={run?.ai_brief} onSelect={pick} />
+        </section>
       )}
 
-      <div className="dash-body">
-        <div className="dash-list">
-          <div className="filters">
-            <button className={"chip" + (fullOnly ? " on" : "")} onClick={() => setFullOnly(!fullOnly)}>Full template</button>
-            <button className={"chip" + (vcpOnly ? " on" : "")} onClick={() => setVcpOnly(!vcpOnly)}>VCP only</button>
-            <span className="rs-slider">
-              RS ≥ <input type="range" min="0" max="99" value={minRS} onChange={(e) => setMinRS(+e.target.value)} />
-              <span className="val">{minRS}</span>
-            </span>
-          </div>
-          <BoardList rows={filtered} selected={selected} onSelect={setSelected} />
-        </div>
-        <div className="dash-detail">
-          {!selected && (
-            <div className="panel">Pick a counter from the list to see its chart and plan.</div>
-          )}
-          {selected && !detail && loading && <div className="panel">Loading {selected}…</div>}
-          {selected && !detail && !loading && (
-            <div className="panel"><h3>{selected}</h3>
-              <div className="reasoning">Not on the current board — it either failed the screen or hasn't been scanned.</div>
-            </div>
-          )}
-          {detail && (
-            <div style={{ opacity: loading ? 0.6 : 1, transition: "opacity .15s" }}>
-              <StockDetail c={detail} regime={regime} latestRun={run?.run_date?.slice(0, 10)} btByMarket={btByMarket} />
-            </div>
-          )}
-        </div>
-      </div>
+      <Section id="watch" title="Watching" list={rest("watchlist")} collapsible />
+      <Section id="position" title="Position — trend intact, no base" list={rest("position")} collapsible />
+      <Section id="forming" title="Forming — near-miss template" list={rest("forming")} collapsible />
     </div>
   );
 }
