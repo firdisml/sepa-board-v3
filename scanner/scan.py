@@ -514,8 +514,15 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
     # signal or a near-pivot base is where fresh filings can change tomorrow's
     # decision; a forming radar name is not). Everything else is served from
     # cache. After the board stabilises this is a handful of fetches, not 39.
-    refresh_days = int(os.environ.get("STREET_REFRESH_DAYS", 3))
-    street_max = int(os.environ.get("STREET_MAX", 15))
+    # Fundamentals change quarterly; filings/news want fresher eyes. One dossier
+    # fetch serves both, so re-fetch a counter when EITHER is due.
+    fund_refresh_days = int(os.environ.get("FUND_REFRESH_DAYS", 7))
+    street_refresh_days = int(os.environ.get("STREET_REFRESH_DAYS", 3))
+    # Budget defaults to the whole board: one fetch gets everything and 40 x ~8s
+    # fits the 45-min Actions window. It is a cap, not a target — steady-state
+    # nights (all caches fresh) fetch ~zero regardless. Turn it down only if the
+    # source starts throttling hard.
+    street_max = int(os.environ.get("STREET_MAX", 40))
 
     def readiness(c: dict) -> tuple:
         s = c.get("setup") or {}
@@ -524,21 +531,27 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         bucket_rank = {"swing": 0, "watchlist": 1, "position": 2, "forming": 3}.get(c["bucket"], 4)
         return (not live, not near, bucket_rank, -(c.get("rs_rank") or 0))
 
-    def is_stale(ticker: str) -> bool:
-        entry = cached_street.get(ticker)
+    def _due(entry: dict | None, max_days: int) -> bool:
+        # explicit None check: `age or 99` would treat a just-fetched age of 0 as
+        # 99 (0 is falsy) and re-fetch every fresh entry every night.
         if entry is None:
             return True
         age = entry.get("_age_days")
-        # explicit None check: `age or 99` treats a just-fetched age of 0 as 99
-        # (0 is falsy), which would re-fetch every fresh entry every night —
-        # the cache-first logic would never actually engage.
-        return age is None or age >= refresh_days
+        return age is None or age >= max_days
+
+    def needs_fetch(ticker: str) -> bool:
+        # Gate on the FUNDAMENTALS cache primarily — the earlier bug gated on
+        # street only, so a full street cache (seeded by test runs) made every
+        # counter look fresh while fundamentals stayed permanently empty and
+        # NULL. A gap in EITHER cache now forces the one fetch that fills both.
+        return (_due(cached_fund.get(ticker), fund_refresh_days)
+                or _due(cached_street.get(ticker), street_refresh_days))
 
     order = sorted(candidates, key=readiness)
     budget = street_max
     to_fetch = set()
     for c in order:
-        if is_stale(c["ticker"]) and budget > 0:
+        if needs_fetch(c["ticker"]) and budget > 0:
             to_fetch.add(c["ticker"])
             budget -= 1
 
@@ -599,8 +612,9 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         c["reasoning"] = reasoning.build(c)
         c["reasoning_sections"] = reasoning.build_sections(c)
 
-    log.info("dossier fetches: %d of %d candidates (budget %d, refresh >%dd); "
-             "rest served from cache", len(to_fetch), len(candidates), street_max, refresh_days)
+    log.info("dossier fetches: %d of %d candidates (budget %d, fund>%dd/street>%dd); "
+             "rest served from cache", len(to_fetch), len(candidates), street_max,
+             fund_refresh_days, street_refresh_days)
 
     # refresh the cache only with what actually parsed tonight
     if fresh_fund or fresh_street:
