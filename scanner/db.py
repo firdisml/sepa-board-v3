@@ -148,12 +148,19 @@ def load_street_cache(conn, max_age_days: int = 7) -> dict[str, dict]:
     """
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT ticker, data FROM street_cache
+            """SELECT ticker, data,
+                      EXTRACT(day FROM now() - fetched_at)::int AS age
+               FROM street_cache
                WHERE page = 'dossier'
                  AND fetched_at > now() - make_interval(days => %s)""",
             (max_age_days,),
         )
-        return {t: d for t, d in cur.fetchall()}
+        out = {}
+        for t, d, age in cur.fetchall():
+            if isinstance(d, dict):
+                d = {**d, "_age_days": age}
+            out[t] = d
+        return out
 
 
 def save_street_cache(conn, data: dict[str, dict]) -> None:

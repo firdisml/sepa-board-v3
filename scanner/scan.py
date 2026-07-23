@@ -501,63 +501,106 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
     fresh_fund: dict[str, dict] = {}
     fresh_street: dict[str, dict] = {}
 
+    # CACHE-FIRST FETCHING (PLAN §5, §7.1). A dossier is one 1.1MB stock-page
+    # GET, and the source burst-limits ~5 rapid requests — measured 2026-07-24,
+    # fetching all 39 candidates took ~12 min because two got stuck in 68s
+    # backoffs. But fundamentals change four times a year and filings are
+    # immutable, so re-fetching a counter we pulled yesterday is pure waste and
+    # the main cause of the throttling.
+    #
+    # So: fetch only when the cached dossier is missing or older than
+    # REFRESH_DAYS, and never fetch more than STREET_MAX counters a night,
+    # spending that budget on the most trade-ready names first (a live entry
+    # signal or a near-pivot base is where fresh filings can change tomorrow's
+    # decision; a forming radar name is not). Everything else is served from
+    # cache. After the board stabilises this is a handful of fetches, not 39.
+    refresh_days = int(os.environ.get("STREET_REFRESH_DAYS", 3))
+    street_max = int(os.environ.get("STREET_MAX", 15))
+
+    def readiness(c: dict) -> tuple:
+        s = c.get("setup") or {}
+        live = bool(s.get("episodic_pivot") or s.get("ma20_bounce") or s.get("ma50_bounce"))
+        near = c.get("pivot") and abs(c["price"] / c["pivot"] - 1) <= 0.05
+        bucket_rank = {"swing": 0, "watchlist": 1, "position": 2, "forming": 3}.get(c["bucket"], 4)
+        return (not live, not near, bucket_rank, -(c.get("rs_rank") or 0))
+
+    def is_stale(ticker: str) -> bool:
+        entry = cached_street.get(ticker)
+        if entry is None:
+            return True
+        age = entry.get("_age_days")
+        # explicit None check: `age or 99` treats a just-fetched age of 0 as 99
+        # (0 is falsy), which would re-fetch every fresh entry every night —
+        # the cache-first logic would never actually engage.
+        return age is None or age >= refresh_days
+
+    order = sorted(candidates, key=readiness)
+    budget = street_max
+    to_fetch = set()
+    for c in order:
+        if is_stale(c["ticker"]) and budget > 0:
+            to_fetch.add(c["ticker"])
+            budget -= 1
+
     session = requests.Session()
     for c in candidates:
+        t = c["ticker"]
         c["group_rs"] = group_rs_by_market.get(c["market"], {}).get(c.get("industry"))
-        dossier = None
-        try:
-            dossier = klse_client.dossier(klse_client.code_of(c["ticker"]), session=session)
-        except Exception as e:
-            log.info("dossier unavailable for %s: %s", c["ticker"], e)
 
-        # CACHE-OR-KEEP, never overwrite-with-nothing. A scrape is a best-effort
-        # network call against a throttled source; a failed one must not erase
-        # numbers we already had. On 2026-07-23 one throttled run wrote NULL
-        # fundamentals over all 39 candidates and every grade vanished from the
-        # board. Quarterly figures change four times a year, so last night's
-        # copy is not wrong — it is merely older, and the UI says by how much.
+        dossier = None
+        if t in to_fetch:
+            try:
+                dossier = klse_client.dossier(klse_client.code_of(t), session=session)
+            except Exception as e:
+                log.info("dossier unavailable for %s: %s", t, e)
+
+        # fundamentals: fresh parse wins; else last-known-good, tagged with age.
+        # A throttled fetch must never erase a grade we already had (the bug on
+        # 2026-07-23 that NULLed all 39 candidates at once).
         fresh = fundamentals.from_dossier(dossier) if dossier else None
         if fresh:
             c["fundamentals"] = fresh
-            fresh_fund[c["ticker"]] = fresh
+            fresh_fund[t] = fresh
         else:
-            cached = cached_fund.get(c["ticker"])
-            c["fundamentals"] = cached
-            if cached:
-                log.info("%s: fundamentals from cache (%sd old)",
-                         c["ticker"], cached.get("_age_days"))
+            c["fundamentals"] = cached_fund.get(t)
 
         c["earnings"] = _earnings_info(dossier)
-        # Headlines carry their source URL so the UI links out instead of
-        # asking the reader to trust an unattributed summary.
-        c["news"] = (dossier or {}).get("news", [])[:5]
         if dossier:
+            c["news"] = dossier.get("news", [])[:5]
             c["setup"]["street"] = {
                 "url": dossier["url"],
                 "announcements": dossier["announcements"][:8],
                 "shareholding": dossier["shareholding"],
                 "dividends": dossier["dividends"][:3],
             }
-            fresh_street[c["ticker"]] = c["setup"]["street"]
-        else:
-            street = cached_street.get(c["ticker"])
-            if street:
-                c["setup"]["street"] = {**street, "stale": True}
-                c["news"] = c["news"] or []
-            # PLAN §7.2 — durable history at zero extra requests: the stock
-            # page already embeds the newest items, so persisting them nightly
-            # accumulates a per-counter archive for EP-catalyst lookback.
-            # Depth beyond ~10 items comes from the dispatch-only backfill.
+            fresh_street[t] = c["setup"]["street"]
+            # PLAN §7.2 — durable archive at zero extra requests: persist the
+            # embedded items so EP-catalyst lookback has history. Runs only when
+            # we actually fetched, so it never fires on the failed-and-empty path.
             try:
-                db.save_counter_news(conn, c["ticker"], "news", dossier["news"])
-                db.save_counter_news(conn, c["ticker"], "announcement",
-                                     dossier["announcements"])
+                db.save_counter_news(conn, t, "news", dossier["news"])
+                db.save_counter_news(conn, t, "announcement", dossier["announcements"])
             except Exception as e:
-                log.warning("counter_news persist failed for %s: %s", c["ticker"], e)
+                log.warning("counter_news persist failed for %s: %s", t, e)
+        else:
+            street = cached_street.get(t)
+            if street:
+                c["setup"]["street"] = {k: v for k, v in street.items() if k != "_age_days"}
+            # news/announcements come from the durable archive, not a blank —
+            # a counter we didn't refresh tonight still has its filed history
+            try:
+                news_rows, _ = db.load_counter_news(conn, t, news_limit=5)
+                c["news"] = news_rows
+            except Exception:
+                c["news"] = []
+
         entry = c.get("pivot") or c["price"]
         c["targets"] = reasoning.targets(entry, c["stop"]) if c.get("stop") else {}
         c["reasoning"] = reasoning.build(c)
         c["reasoning_sections"] = reasoning.build_sections(c)
+
+    log.info("dossier fetches: %d of %d candidates (budget %d, refresh >%dd); "
+             "rest served from cache", len(to_fetch), len(candidates), street_max, refresh_days)
 
     # refresh the cache only with what actually parsed tonight
     if fresh_fund or fresh_street:
