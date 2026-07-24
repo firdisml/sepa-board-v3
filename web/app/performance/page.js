@@ -1,6 +1,7 @@
 import { latestBundle, latestReview, signalOutcomes } from "@/lib/db";
 import Shell from "@/components/Shell";
 import LineChart from "@/components/LineChart";
+import StrategyBoard from "@/components/StrategyBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -159,6 +160,8 @@ export default async function Performance() {
       {markets.length === 0 && (
         <div className="panel"><h3>No graded signals yet</h3><div className="reasoning">Receipts accumulate after each nightly scan.</div></div>
       )}
+      <StrategyBoard rows={rows} />
+
       {markets.map(([label, tagClass, subset]) => (
         <MarketSection key={tagClass} label={label} tagClass={tagClass} rows={subset} />
       ))}
