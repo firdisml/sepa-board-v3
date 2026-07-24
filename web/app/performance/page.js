@@ -93,7 +93,12 @@ export default async function Performance() {
   // Bursa only in v3.0 (US parked). Kept per-market rather than blended: the
   // two markets' structure and behaviour differ too much for a combined
   // expectancy to mean anything.
+  // v2 leftover: this listed only "US", so every Bursa receipt was filtered out
+  // and the summary read "No graded signals yet" directly above a table full of
+  // them. Kept per-market rather than blended — the two markets' structure and
+  // costs differ too much for a combined expectancy to mean anything.
   const markets = [
+    ["Bursa Malaysia", "my", rows.filter((r) => r.market === "MY")],
     ["United States", "us", rows.filter((r) => r.market === "US")],
   ].filter(([, , subset]) => subset.length > 0);
 

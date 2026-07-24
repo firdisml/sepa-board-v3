@@ -286,7 +286,24 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
     # average (excluding today, which would dilute its own baseline)
     vol50 = float(df["Volume"].iloc[-51:-1].mean()) if len(df) >= 51 else 0.0
     vol_ratio = round(float(df["Volume"].iloc[-1]) / vol50, 2) if vol50 > 0 else None
-    stop_val = indicators.suggested_stop(df, entry)
+    # ENTRY/STOP FOLLOW THE ACTIVE TACTIC. `entry` above is the pivot when one
+    # exists — correct, because a breakout is the primary entry. But the stop
+    # was always suggested_stop() (max 10-day low, entry-8%), which is the
+    # BREAKOUT's stop, shown even when the live setup is an MA bounce with a
+    # tighter, differently-derived stop of its own. That matters now that
+    # ma20_bounce is the measured best tactic (+0.53R vs breakout's +0.25R,
+    # PLAN §12.1): taking one while reading the breakout stop means risking
+    # more than the trade is designed to.
+    #
+    # Priority mirrors what a trader would actually take TODAY: a live bounce
+    # at a rising MA beats a pivot that price has not reached yet.
+    _ma20 = indicators.ma20_bounce(df) if tt["pass_all"] else None
+    _ma50 = indicators.ma50_bounce(df) if tt["pass_all"] else None
+    active_tactic, stop_val = "breakout", indicators.suggested_stop(df, entry)
+    if _ma20 and _ma20.get("stop"):
+        active_tactic, entry, stop_val = "ma20_bounce", _ma20["trigger"], _ma20["stop"]
+    elif _ma50 and _ma50.get("stop"):
+        active_tactic, entry, stop_val = "ma50_bounce", _ma50["trigger"], _ma50["stop"]
     # stop quality: a stop inside the daily range gets hit by noise, not by
     # being wrong — 1.5x+ ATR distance is beyond normal wiggle
     atr = indicators._atr(df)
@@ -328,8 +345,11 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
         "needs": indicators.what_needs_to_happen(tt, price),
         "pocket_pivot": indicators.pocket_pivot(df),
         # pullback-bounce entries only mean something in a confirmed uptrend
-        "ma20_bounce": indicators.ma20_bounce(df) if tt["pass_all"] else None,
-        "ma50_bounce": indicators.ma50_bounce(df) if tt["pass_all"] else None,
+        "ma20_bounce": _ma20,
+        "ma50_bounce": _ma50,
+        # which tactic the top-level entry/stop belong to, so the UI can label
+        # the plan instead of implying every candidate is a pivot breakout
+        "active_tactic": active_tactic,
         # EP fires on neglect — deliberately NOT trend-gated. Kept on the board
         # because the gap is real information, but carried as a hazard: it
         # backtests -0.38R here (PLAN §12.1), so it also raises a warning above.

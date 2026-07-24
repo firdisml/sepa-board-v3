@@ -254,7 +254,11 @@ def suggested_stop(df: pd.DataFrame, entry: float) -> float:
     stop = max(recent_low, floor)
     if stop >= entry:
         stop = floor
-    return round(stop, 2)
+    # 3dp below RM1: Bursa's tick is half a sen (0.005) there, so rounding to
+    # 2dp moves a 0.525 stop to 0.53 — a full tick higher than intended, and
+    # most of this board trades under RM1. Above RM1 the tick is a full sen
+    # and the third decimal is always a trailing zero.
+    return round(stop, 3 if stop < 1 else 2)
 
 
 def exit_signals(df: pd.DataFrame, entry: float, stop: float, pivot: float | None,
