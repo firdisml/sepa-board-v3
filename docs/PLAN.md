@@ -745,6 +745,34 @@ boards before switching off v2 — same-day candidate overlap should be high
 (≥70% of swing bucket); investigate every large divergence (usually data
 quality, occasionally a port bug).
 
+### 12.1 Strategy results — Bursa, full universe (measured 2026-07-24)
+
+972 counters, 2 years, costs modeled per side, no board-selection hindsight:
+
+| strategy | trades | win% | exp R | PF | CAGR | maxDD |
+|---|---|---|---|---|---|---|
+| **ma20_bounce** | 81 | 38.3 | **+0.53** | **2.14** | **+20.4%** | **−6.9%** |
+| breakout | 83 | 34.9 | +0.25 | 1.43 | +7.9% | −24.0% |
+| ma50_bounce | 151 | 18.5 | −0.19 | 0.62 | −16.8% | −39.7% |
+| episodic_pivot | 292 | 17.1 | −0.38 | 0.40 | −48.2% | −74.9% |
+
+**The pattern: entries that require price TIGHT against a rising short-term
+average pay; entries that chase distance or gaps do not.** The two profitable
+tactics trade ~80 times in two years and win 35–38%. The two losers fire far
+more often (151, 292) at ~18% — they are taking marginal setups. A 50MA
+pullback is by definition a deeper, later retreat, and an EP is a gap; both
+are the opposite of the volatility contraction SEPA is built on.
+
+**episodic_pivot is the sharpest finding.** −0.38R over 292 trades with a
+−75% drawdown is not a weak edge, it is a negative one. This is the
+mechanical evidence behind §7.1's rule that an EP without a verified catalyst
+is "an operator signature" — on Bursa the gap-on-volume pattern is mostly
+goreng, not institutional accumulation. Keep the AI catalyst check as a hard
+gate, and treat an unverified EP as `avoid`, never as a setup.
+
+Caveat: 81–83 trades is a usable but not large sample, and one 2-year window
+is one regime. Re-run per §9 upgrade C before trusting the ranking further.
+
 ---
 
 ## 13. Cost & quota budget (steady state)
