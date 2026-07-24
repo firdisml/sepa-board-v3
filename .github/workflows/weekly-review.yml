@@ -1,0 +1,32 @@
+name: weekly-review
+
+on:
+  # Sunday 01:00 UTC — after the week's scans and backtests have landed, before
+  # Monday's session. The review reads receipts and backtests and writes
+  # numbers-anchored notes on what is and isn't working (PLAN §7 job 3).
+  schedule:
+    - cron: "0 1 * * 0"
+  workflow_dispatch: {}
+
+concurrency:
+  group: weekly-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scanner/requirements.txt
+      - name: Install dependencies
+        run: pip install -r scanner/requirements.txt
+      - name: Weekly review
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python -m scanner.reviewer
