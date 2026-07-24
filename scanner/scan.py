@@ -244,8 +244,10 @@ def _with_tactic_markers(pat: dict, df: pd.DataFrame, setup: dict) -> dict:
         markers.append({"t": last_t, "position": "belowBar",
                         "shape": "arrowUp", "text": f"{label} bounce"})
     if setup.get("episodic_pivot"):
-        markers.append({"t": last_t, "position": "belowBar",
-                        "shape": "arrowUp", "text": "episodic pivot"})
+        # marker points DOWN and reads as a caution: this pattern backtests
+        # -0.38R on Bursa (PLAN §12.1), so the chart must not imply an entry
+        markers.append({"t": last_t, "position": "aboveBar",
+                        "shape": "arrowDown", "text": "EP — verify catalyst"})
     if setup.get("momentum_burst"):
         markers.append({"t": last_t, "position": "belowBar",
                         "shape": "arrowUp", "text": "4% burst"})
@@ -302,6 +304,17 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
                       "stop": round(float(last["Low"]), 2), "vol_ratio": vol_ratio}
     pat = patterns.analyze(df)
     warnings = indicators.setup_warnings(df, pivot, tt.get("checks"), pat.get("volume"))
+    ep_setup = indicators.episodic_pivot(df)
+    if ep_setup:
+        # Measured, not assumed: -0.38R over 292 Bursa trades (PLAN §12.1). It
+        # reaches the board as a WARNING so the gap is visible and its catalyst
+        # can be checked — never as a setup with a buy plan attached.
+        warnings.append({
+            "code": "episodic_pivot_unverified", "severity": "high",
+            "text": (f"Gapped {ep_setup['gap_pct']}% on {ep_setup['vol_x']}x volume. "
+                     "This pattern backtests -0.38R on Bursa — verify the catalyst "
+                     "(earnings, contract, corporate action) or treat as goreng."),
+        })
     rules_total = len(tt["checks"])  # 8 full template; fewer on the IPO path
     setup = {
         "early_entry": early,
@@ -317,8 +330,10 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
         # pullback-bounce entries only mean something in a confirmed uptrend
         "ma20_bounce": indicators.ma20_bounce(df) if tt["pass_all"] else None,
         "ma50_bounce": indicators.ma50_bounce(df) if tt["pass_all"] else None,
-        # EP fires on neglect — deliberately NOT trend-gated
-        "episodic_pivot": indicators.episodic_pivot(df),
+        # EP fires on neglect — deliberately NOT trend-gated. Kept on the board
+        # because the gap is real information, but carried as a hazard: it
+        # backtests -0.38R here (PLAN §12.1), so it also raises a warning above.
+        "episodic_pivot": ep_setup,
         "base_count": indicators.base_count(df),
         "warnings": warnings,
         **indicators.tightening_now(df),

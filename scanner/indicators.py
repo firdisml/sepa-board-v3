@@ -691,9 +691,18 @@ def episodic_pivot(df: pd.DataFrame) -> dict | None:
     return {"trigger": round(h, 2), "stop": round(l, 2), "risk_pct": risk_pct,
             "gap_pct": round(gap_pct, 1), "chg_pct": round(chg_pct, 1),
             "vol_x": round(vol_x, 1),
+            # Measured on the full Bursa universe 2026-07-24 (PLAN §12.1):
+            # 292 trades, 17.1% win rate, -0.38R expectancy, -75% drawdown.
+            # Not a weak edge — a NEGATIVE one. On Bursa a gap-on-volume out of
+            # neglect is mostly goreng, not institutional accumulation, which
+            # is exactly what §7.1 means by "an operator signature".
+            "measured_edge_r": -0.38,
+            "measured_note": "backtested -0.38R over 292 Bursa trades — negative edge",
+            "requires_catalyst": True,
             "note": ("Episodic pivot: violent gap on massive volume out of neglect. "
-                     "Entry on a break above the gap-day high, stop at its low. "
-                     "VERIFY THE CATALYST first — no catalyst, no trade.")}
+                     "On Bursa this pattern BACKTESTS NEGATIVE (-0.38R over 292 "
+                     "trades) — it is only tradeable with a verified catalyst. "
+                     "No catalyst found means goreng until proven otherwise: avoid.")}
 
 
 def momentum_burst(df: pd.DataFrame) -> dict | None:

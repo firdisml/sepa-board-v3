@@ -41,7 +41,9 @@ function RailRow({ r, selected, onSelect }) {
       </span>
       {/* tag strip: the setups that change what you'd do tomorrow */}
       <span className="rr-tags">
-        {r.setup?.episodic_pivot && <i className="tag ep">EP</i>}
+        {/* EP backtests -0.38R on Bursa (PLAN §12.1) — it is a hazard flag, so
+            it wears the warning colour, not the "best setup" highlight */}
+        {r.setup?.episodic_pivot && <i className="tag bad" title="Episodic pivot — backtests negative on Bursa; verify catalyst">EP?</i>}
         {r.setup?.ma20_bounce && <i className="tag good">20</i>}
         {r.setup?.ma50_bounce && <i className="tag good">50</i>}
         {r.vcp?.vcp && <i className="tag good">VCP</i>}
