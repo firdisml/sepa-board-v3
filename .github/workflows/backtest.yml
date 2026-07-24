@@ -1,0 +1,63 @@
+name: backtest
+
+on:
+  # Chained on the scan so the board and its evidence stay in step, but kept a
+  # separate workflow: a backtest failure must never redden the scan that
+  # produced tomorrow's board.
+  workflow_run:
+    workflows: [scan-my]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "Whole exchange (MY) instead of the board"
+        type: choice
+        options: ["MY", ""]
+        default: "MY"
+      strategy:
+        description: "Entry strategy"
+        type: choice
+        options: [breakout, ma20_bounce, ma50_bounce, episodic_pivot]
+        default: breakout
+      years:
+        description: "Years of history"
+        default: "2"
+      label:
+        description: "Label for this run"
+        default: ""
+
+concurrency:
+  group: backtest
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    # 972 tickers x 2y vectorised runs in ~3s; the wall time is warehouse I/O
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scanner/requirements.txt
+      - name: Install dependencies
+        run: pip install -r scanner/requirements.txt
+      - name: Run backtest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # inputs are passed as env, never interpolated into the shell (§11.1)
+          BT_UNIVERSE: ${{ inputs.universe || 'MY' }}
+          BT_STRATEGY: ${{ inputs.strategy || 'breakout' }}
+          BT_YEARS: ${{ inputs.years || '2' }}
+          BT_LABEL: ${{ inputs.label }}
+        run: |
+          LABEL="${BT_LABEL:-nightly $(date -u +%F)}"
+          python -m scanner.backtest \
+            --universe "$BT_UNIVERSE" \
+            --markets "$BT_UNIVERSE" \
+            --strategy "$BT_STRATEGY" \
+            --years "$BT_YEARS" \
+            --label "$LABEL"

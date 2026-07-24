@@ -369,6 +369,56 @@ def compute_stats(curve: list[dict], trades: list[dict], start: float) -> dict:
     return stats
 
 
+def bootstrap_risk(trades: list[dict], start: float, risk_pct: float = 0.01,
+                   iterations: int = 10_000, seed: int = 7) -> dict | None:
+    """Resample the trade list to show the DISTRIBUTION of outcomes (PLAN §9 B).
+
+    A backtest reports the one path history happened to take. Reshuffling the
+    same trades many times answers the question that actually matters before
+    risking money: how bad does this get when the same edge deals a worse hand?
+    A 40% CAGR that shows a 5th-percentile −45% drawdown is not the same
+    strategy as one that bottoms at −12%, even though both "worked".
+
+    Order is what is resampled, not the edge itself — every path here has the
+    strategy's real win rate and R distribution; only the sequence changes.
+    """
+    rs = [float(t["r"]) for t in (trades or []) if t.get("r") is not None]
+    if len(rs) < 20:
+        # under ~20 closed trades the resampled spread is noise about noise;
+        # PLAN §7 makes the same call for the weekly review
+        return {"note": f"sample too small ({len(rs)} trades) — need 20+",
+                "trades": len(rs)}
+
+    rng = np.random.default_rng(seed)
+    n = len(rs)
+    draws = rng.choice(np.array(rs), size=(iterations, n), replace=True)
+
+    # equity path per iteration, compounding the same fixed-fractional risk
+    growth = 1.0 + draws * risk_pct
+    paths = np.cumprod(growth, axis=1)
+    finals = paths[:, -1]
+
+    running_max = np.maximum.accumulate(paths, axis=1)
+    drawdowns = (paths / running_max - 1.0).min(axis=1)
+
+    years = max(n / 50.0, 1e-9)   # ~50 trades a year is this system's cadence
+    cagrs = finals ** (1 / years) - 1
+
+    def pct(arr, p):
+        return round(float(np.percentile(arr, p)) * 100, 1)
+
+    return {
+        "iterations": iterations, "trades": n, "risk_pct": risk_pct * 100,
+        "cagr_p5": pct(cagrs, 5), "cagr_p50": pct(cagrs, 50), "cagr_p95": pct(cagrs, 95),
+        "maxdd_p5": pct(drawdowns, 5), "maxdd_p50": pct(drawdowns, 50),
+        "maxdd_p95": pct(drawdowns, 95),
+        "p_dd_over_25pct": round(float((drawdowns <= -0.25).mean()) * 100, 1),
+        "p_dd_over_50pct": round(float((drawdowns <= -0.50).mean()) * 100, 1),
+        # risk of ruin proxy: how often the account halves at this risk level
+        "p_ruin_half": round(float((finals < 0.5).mean()) * 100, 1),
+    }
+
+
 def _board_tickers(conn) -> list[str]:
     with conn.cursor() as cur:
         cur.execute("""SELECT DISTINCT c.ticker FROM candidates c
@@ -381,6 +431,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tickers", help="comma-separated, e.g. NVDA,PLTR or 0138.KL")
     ap.add_argument("--from-board", action="store_true", help="use latest scan's candidates")
+    ap.add_argument("--universe", choices=["MY", "US"],
+                    help="test the WHOLE exchange from the warehouse, not just the "
+                         "board (PLAN §9 upgrade A). --from-board only ever tests "
+                         "names that are on the board TODAY, which is hindsight: it "
+                         "cannot tell you what the rules would have found in 2024.")
+    ap.add_argument("--min-bars", type=int, default=260,
+                    help="skip warehouse tickers with less history than this")
     ap.add_argument("--markets", default="US,MY",
                     help="comma-separated markets to test; each runs as its OWN "
                          "backtest with its own equity curve (default US,MY)")
@@ -409,16 +466,32 @@ def main() -> int:
         conn = dbmod.connect()
         dbmod.apply_migrations(conn)
 
-    if a.tickers:
-        tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
-    elif a.from_board:
-        tickers = _board_tickers(conn)
-        log.info("Backtesting latest board: %d tickers", len(tickers))
-    else:
-        ap.error("--tickers or --from-board required")
+    # Prices come from the warehouse now. v2 called scan.download_batch (moomoo),
+    # which no longer exists — this file would have crashed on line one.
+    from . import warehouse
 
-    data = scanmod.download_batch(tickers, period=f"{a.years}y")
-    log.info("History downloaded for %d/%d tickers", len(data), len(tickers))
+    if a.universe:
+        if conn is None:
+            conn = dbmod.connect()
+        data = warehouse.load_window(conn, a.universe, min_bars=a.min_bars)
+        log.info("Full-universe backtest: %d %s tickers with >=%d bars",
+                 len(data), a.universe, a.min_bars)
+    else:
+        if a.tickers:
+            tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
+        elif a.from_board:
+            tickers = _board_tickers(conn)
+            log.info("Backtesting latest board: %d tickers", len(tickers))
+        else:
+            ap.error("--tickers, --from-board or --universe required")
+        market = _mkt(tickers[0]) if tickers else "MY"
+        window = warehouse.load_window(conn or dbmod.connect(), market, min_bars=a.min_bars)
+        data = {t: window[t] for t in tickers if t in window}
+        missing = [t for t in tickers if t not in window]
+        if missing:
+            log.info("not in warehouse (%d): %s", len(missing), missing[:8])
+
+    log.info("History loaded for %d tickers", len(data))
     if not data:
         log.error("No data — aborting.")
         return 1
@@ -441,9 +514,18 @@ def main() -> int:
     strat_suffix = "" if a.strategy == "breakout" else f" · {a.strategy}"
     for m, result in results.items():
         tickers_m = [t for t in data if _mkt(t) == m]
-        result["params"]["tickers"] = sorted(tickers_m)
+        # a full-universe run lists ~1,000 tickers; storing them all bloats the
+        # row for no benefit, so record the count instead
+        if a.universe:
+            result["params"]["universe"] = a.universe
+            result["params"]["ticker_count"] = len(tickers_m)
+        else:
+            result["params"]["tickers"] = sorted(tickers_m)
         result["params"]["years"] = a.years
         result["params"]["market"] = m
+        result["stats"]["bootstrap"] = bootstrap_risk(
+            result["trades"], start=result["stats"].get("final_equity", 0) or 0,
+            risk_pct=(a.risk_pct or 0.01))
 
     print(json.dumps({m: r["stats"] for m, r in results.items()}, indent=2))
     if conn and not a.no_db:

@@ -56,11 +56,57 @@ export default async function Backtests({ searchParams }) {
       ) : (
         <>
           <div className="stats">
-            <div className="stat"><div className="k">Expectancy per trade</div><div className={"v " + ((s.expectancy_r ?? 0) > 0 ? "green" : "red")}>{s.expectancy_r ?? "—"}R</div><div className="sub">{s.trades} trades over {sel.params?.years}y · {(sel.params?.tickers || []).length} tickers</div></div>
+            <div className="stat"><div className="k">Expectancy per trade</div><div className={"v " + ((s.expectancy_r ?? 0) > 0 ? "green" : "red")}>{s.expectancy_r ?? "—"}R</div><div className="sub">{s.trades} trades over {sel.params?.years}y · {sel.params?.ticker_count ?? (sel.params?.tickers || []).length} tickers{sel.params?.universe ? " (full universe)" : ""}</div></div>
             <div className="stat"><div className="k">CAGR</div><div className={"v " + ((s.cagr_pct ?? 0) > 0 ? "green" : "red")}>{s.cagr_pct}%</div><div className="sub">start {Number(sel.params?.start_equity || 0).toLocaleString()} → final {Number(s.final_equity || 0).toLocaleString()}</div></div>
             <div className="stat"><div className="k">Max drawdown</div><div className="v red">{s.max_drawdown_pct}%</div><div className="sub">worst peak-to-trough on the equity curve</div></div>
             <div className="stat"><div className="k">Profit factor</div><div className={"v " + ((s.profit_factor ?? 0) >= 1.5 ? "green" : "amber")}>{s.profit_factor ?? "—"}</div><div className="sub">gross wins ÷ gross losses · ≥1.5 is healthy</div></div>
           </div>
+
+          {s.bootstrap && (
+            <div className="panel" style={{ marginBottom: 14 }}>
+              <h3>Risk distribution — 10,000 resamples</h3>
+              {s.bootstrap.note ? (
+                <div className="reasoning">{s.bootstrap.note}</div>
+              ) : (
+                <>
+                  <div className="reasoning" style={{ marginBottom: 10 }}>
+                    The curve above is the one path history dealt. These are the same
+                    trades in different orders — same win rate, same R distribution,
+                    only the sequence changes. The p5 column is the honest question:
+                    how bad does this edge get on a bad run?
+                  </div>
+                  <div className="stats">
+                    <div className="stat">
+                      <div className="k">CAGR spread</div>
+                      <div className={"v " + ((s.bootstrap.cagr_p50 ?? 0) > 0 ? "green" : "red")}>
+                        {s.bootstrap.cagr_p50}%
+                      </div>
+                      <div className="sub">p5 {s.bootstrap.cagr_p5}% · p95 {s.bootstrap.cagr_p95}%</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">Max drawdown spread</div>
+                      <div className="v red">{s.bootstrap.maxdd_p50}%</div>
+                      <div className="sub">p5 {s.bootstrap.maxdd_p5}% (bad run) · p95 {s.bootstrap.maxdd_p95}%</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">P(drawdown &gt; 25%)</div>
+                      <div className={"v " + ((s.bootstrap.p_dd_over_25pct ?? 0) > 20 ? "red" : "amber")}>
+                        {s.bootstrap.p_dd_over_25pct}%
+                      </div>
+                      <div className="sub">at {s.bootstrap.risk_pct}% risk/trade · &gt;50%: {s.bootstrap.p_dd_over_50pct}%</div>
+                    </div>
+                    <div className="stat">
+                      <div className="k">Risk of halving</div>
+                      <div className={"v " + ((s.bootstrap.p_ruin_half ?? 0) > 1 ? "red" : "green")}>
+                        {s.bootstrap.p_ruin_half}%
+                      </div>
+                      <div className="sub">account down 50% in {s.bootstrap.trades} trades</div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="detail-grid">
             <div className="panel">
