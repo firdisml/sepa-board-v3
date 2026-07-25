@@ -114,6 +114,20 @@ export async function latestReview() {
   }
 }
 
+export async function latestFactorDeciles() {
+  // latest computed_at batch per factor — weekly factors.py output
+  try {
+    const rows = await db()`
+      SELECT market, factor, bucket, n, fwd20_mean, fwd20_median, win_rate, monotone, computed_at
+      FROM factor_deciles fd
+      WHERE computed_at = (SELECT max(computed_at) FROM factor_deciles f2 WHERE f2.factor = fd.factor)
+      ORDER BY factor, bucket`;
+    return JSON.parse(JSON.stringify(rows));
+  } catch {
+    return []; // table appears with migration 018 — page must not 500 before that
+  }
+}
+
 export async function backtestById(id) {
   const rows = await db()`SELECT * FROM backtests WHERE id = ${id}`;
   return rows[0] ? JSON.parse(JSON.stringify(rows[0])) : null;

@@ -409,6 +409,28 @@ def compute_stats(curve: list[dict], trades: list[dict], start: float) -> dict:
         stats["sortino"] = round(float(qs.stats.sortino(ret)), 2)
         stats["volatility_pct"] = round(float(qs.stats.volatility(ret)) * 100, 2)
         stats["metrics_source"] = "quantstats"
+        # monthly returns grid + worst drawdown periods (PLAN §9 upgrade B /
+        # NEXT.md §4) — jsonb-shaped for the /backtest page
+        try:
+            mr = qs.stats.monthly_returns(ret, compounded=True)
+            stats["monthly_returns"] = {
+                str(int(year)): {str(m): (round(float(v) * 100, 2) if pd.notna(v) else None)
+                                  for m, v in row.items() if m != "EOY"}
+                for year, row in mr.iterrows()
+            }
+        except Exception:
+            stats["monthly_returns"] = None
+        try:
+            dd_detail = qs.stats.drawdown_details(qs.stats.to_drawdown_series(ret))
+            worst = dd_detail.sort_values("max drawdown").head(5)
+            stats["drawdown_periods"] = [
+                {"start": str(r["start"])[:10], "end": str(r["end"])[:10],
+                 "days": int(r["days"]),
+                 "depth_pct": round(float(r["max drawdown"]), 2)}
+                for _, r in worst.iterrows()
+            ]
+        except Exception:
+            stats["drawdown_periods"] = None
     except Exception:
         sd = float(ret.std())
         stats["sharpe"] = round(float(ret.mean()) / sd * math.sqrt(252), 2) if sd > 0 else None

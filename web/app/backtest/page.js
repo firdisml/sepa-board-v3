@@ -111,6 +111,58 @@ export default async function Backtests({ searchParams }) {
             </div>
           )}
 
+          {s.monthly_returns && (
+            <div className="panel" style={{ marginBottom: 14 }}>
+              <h3>Monthly returns</h3>
+              <div className="bt-wrap">
+                <table className="bt">
+                  <thead><tr><th className="ta-l">Year</th>
+                    {["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"].map((m) => (
+                      <th key={m} className="ta-r">{m}</th>
+                    ))}</tr></thead>
+                  <tbody>
+                    {Object.entries(s.monthly_returns).map(([year, months]) => (
+                      <tr key={year}>
+                        <td className="ta-l sym">{year}</td>
+                        {["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"].map((m) => {
+                          const v = months?.[m];
+                          return (
+                            <td key={m} className={"ta-r num" + (v == null ? "" : v > 0 ? " pos" : v < 0 ? " neg" : "")}>
+                              {v == null ? "—" : v.toFixed(1)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="legend"><span className="right">% per calendar month, compounded from the equity curve</span></div>
+            </div>
+          )}
+
+          {Array.isArray(s.drawdown_periods) && s.drawdown_periods.length > 0 && (
+            <div className="panel" style={{ marginBottom: 14 }}>
+              <h3>Worst drawdown periods</h3>
+              <div className="bt-wrap">
+                <table className="bt">
+                  <thead><tr><th className="ta-l">Start</th><th className="ta-l">End</th>
+                    <th className="ta-r">Days</th><th className="ta-r">Depth</th></tr></thead>
+                  <tbody>
+                    {s.drawdown_periods.map((d, i) => (
+                      <tr key={i}>
+                        <td className="ta-l num">{d.start}</td>
+                        <td className="ta-l num">{d.end}</td>
+                        <td className="ta-r num">{d.days}</td>
+                        <td className="ta-r num neg">{d.depth_pct}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div className="detail-grid">
             <div className="panel">
               <h3>

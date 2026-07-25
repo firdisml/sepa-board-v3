@@ -645,6 +645,18 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
                 db.save_counter_news(conn, t, "announcement", dossier["announcements"])
             except Exception as e:
                 log.warning("counter_news persist failed for %s: %s", t, e)
+            # NEXT.md §5: the sidebar embeds only ~5 announcements but the
+            # paginated feed serves 30 per page — one extra small request per
+            # FETCHED counter (already budget-gated above) deepens the archive
+            # 6x, which is what answers "was there a contract win inside the
+            # base?". Filings are immutable; the item_id PK dedupes re-pulls.
+            try:
+                anns30 = klse_client.announcements_feed(
+                    klse_client.code_of(t), max_pages=1, session=session)
+                if anns30:
+                    db.save_counter_news(conn, t, "announcement", anns30)
+            except Exception as e:
+                log.info("announcements feed unavailable for %s: %s", t, e)
         else:
             street = cached_street.get(t)
             if street:

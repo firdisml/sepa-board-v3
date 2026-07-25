@@ -92,7 +92,14 @@ New `web/components/BacktestWinner.js`, rendered **above** the stats row in
 
 ---
 
-## 3. Factor validation (§9 upgrade C)
+## 3. Factor validation (§9 upgrade C) — DONE 2026-07-26
+
+Shipped: scanner/factors.py (quintiles, not deciles — young board), migration
+018_factor_deciles, chained before reviewer in weekly-review.yml
+(continue-on-error), FactorPanel on /performance with the NOT-monotone callout.
+First real numbers land next Sunday run.
+
+### original spec
 
 New `scanner/factors.py`, chained to `weekly-review.yml` (weekly question, not
 nightly).
@@ -108,7 +115,13 @@ nightly).
 
 ---
 
-## 4. Monthly heatmap + drawdown table
+## 4. Monthly heatmap + drawdown table — DONE 2026-07-26
+
+Shipped: compute_stats now emits monthly_returns (year x month %, jsonb) and
+drawdown_periods (5 worst); /backtest renders both above the equity curve.
+Older saved runs lack the fields and the page skips them cleanly.
+
+### original spec
 
 `quantstats` is already installed and `compute_stats` already imports it.
 Add `qs.stats.monthly_returns(ret)` → jsonb plus a drawdown-periods table, and
@@ -116,7 +129,16 @@ render on `/backtest` beside the existing bootstrap panel.
 
 ---
 
-## 5. Announcements history: 5 → 30 per counter
+## 5. Announcements history: 5 → 30 per counter — DONE 2026-07-26
+
+The 'third pattern' was already solved: klse_client.parse_feed handles
+`a.announcement-item` (captured fixture, tested) and backfill_news.py does
+deep dispatch pulls. The actual gap was the nightly scan persisting only the
+5 sidebar items — scan.py now also pulls announcements_feed page 1 (30
+items) per FETCHED counter (budget-gated, one small request) into
+counter_news. Filings immutable, item_id PK dedupes.
+
+### original spec
 
 `klsescreener.com/v2/announcements/stock/{code}` serves **30** announcements
 (verified 2026-07-23); the scan currently takes only the 5 embedded in the

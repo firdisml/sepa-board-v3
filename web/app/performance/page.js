@@ -1,4 +1,5 @@
-import { latestBundle, latestReview, signalOutcomes } from "@/lib/db";
+import { latestBundle, latestReview, signalOutcomes, latestFactorDeciles } from "@/lib/db";
+import FactorPanel from "@/components/FactorPanel";
 import Shell from "@/components/Shell";
 import LineChart from "@/components/LineChart";
 import StrategyBoard from "@/components/StrategyBoard";
@@ -87,7 +88,7 @@ function MarketSection({ label, tagClass, rows }) {
 }
 
 export default async function Performance() {
-  const [bundle, rows, weekly] = await Promise.all([latestBundle(), signalOutcomes(), latestReview()]);
+  const [bundle, rows, weekly, factors] = await Promise.all([latestBundle(), signalOutcomes(), latestReview(), latestFactorDeciles()]);
   const regime = bundle?.run?.regime || null;
   const rv = weekly?.review;
 
@@ -161,6 +162,7 @@ export default async function Performance() {
         <div className="panel"><h3>No graded signals yet</h3><div className="reasoning">Receipts accumulate after each nightly scan.</div></div>
       )}
       <StrategyBoard rows={rows} />
+      <FactorPanel rows={factors} />
 
       {markets.map(([label, tagClass, subset]) => (
         <MarketSection key={tagClass} label={label} tagClass={tagClass} rows={subset} />

@@ -25,6 +25,13 @@ jobs:
           cache-dependency-path: scanner/requirements.txt
       - name: Install dependencies
         run: pip install -r scanner/requirements.txt
+      # factors first: the reviewer's notes can then read this week's decile
+      # tables. A factor failure must not sink the review (and vice versa).
+      - name: Factor validation
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m scanner.factors
       - name: Weekly review
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
