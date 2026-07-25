@@ -15,6 +15,11 @@ const LABELS = {
   rs_rank_ge_70: "RS rank ≥ 70 (funnel pool)",
 };
 
+const TACTIC_LABEL = {
+  breakout: "Breakout", ma20_bounce: "20MA bounce", ma50_bounce: "50MA bounce",
+};
+const fmtR = (v) => (v == null ? null : `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}R`);
+
 function Dots({ checks, setup }) {
   const entries = Object.values(checks || {});
   const passed = setup?.rules_passed ?? entries.filter((c) => c.pass).length;
@@ -35,7 +40,7 @@ function Dots({ checks, setup }) {
 // are ALWAYS visible without scrolling; everything else (AI commentary,
 // fundamentals, sponsorship, sizing) is a tab, one panel visible at a time,
 // instead of six panels stacked into a scroll.
-export default function StockDetail({ c, regime, latestRun, btByMarket }) {
+export default function StockDetail({ c, regime, latestRun, btByMarket, btByStrategy }) {
   const rowDate = c.as_of?.slice(0, 10);
   const stale = latestRun && rowDate && rowDate < latestRun;
   const checks = c.checks || {};
@@ -43,7 +48,17 @@ export default function StockDetail({ c, regime, latestRun, btByMarket }) {
   const setup = c.setup || {};
   const contr = vcp.contractions_pct || [];
 
-  const bt = btByMarket?.[c.market] || null;
+  // setup.active_tactic names which tactic's entry/stop are actually live on
+  // THIS counter today (scan.py picks entry/stop by tactic priority). The
+  // dashed chart levels and the strategy badge below both key off it — using
+  // btByMarket's "latest backtest regardless of strategy" here would show an
+  // ma20_bounce counter's chart calibrated off a breakout backtest whenever
+  // that happened to run more recently (nightly automation always runs
+  // breakout), silently mismatching the plan to the evidence.
+  const activeTactic = setup.active_tactic || "breakout";
+  const stratBt = btByStrategy?.[c.market]?.[activeTactic] || null;
+  const marketBt = btByMarket?.[c.market] || null;
+  const bt = stratBt || marketBt;
   const bs = bt?.stats || {};
   let btLevels = [];
   if (c.pivot && c.stop && Number(c.pivot) > Number(c.stop)) {
@@ -115,6 +130,14 @@ export default function StockDetail({ c, regime, latestRun, btByMarket }) {
           }`}>{c.ai_note.verdict}</span>
         )}
         <span className="fact">Trend <Dots checks={checks} setup={setup} /></span>
+        <span className="fact">
+          Strategy <b>{TACTIC_LABEL[activeTactic] || activeTactic}</b>
+          {stratBt?.stats?.expectancy_r != null && (
+            <span style={{ color: stratBt.stats.expectancy_r > 0 ? "var(--green)" : "var(--red)" }}>
+              {" "}({fmtR(stratBt.stats.expectancy_r)} bt)
+            </span>
+          )}
+        </span>
         <span className="fact">RS <b>{c.rs_rank ?? "—"}</b></span>
         {vcp.vcp && <span className="fact" style={{ color: "var(--green)" }}>VCP {contr.length}T</span>}
         {c.pivot && <span className="fact">Pivot <b>{money(c.pivot, c.market)}</b></span>}
@@ -345,8 +368,13 @@ export default function StockDetail({ c, regime, latestRun, btByMarket }) {
 
       {bt && btLevels.length > 1 && (
         <div className="sub" style={{ marginTop: 6 }}>
-          Dashed chart levels calibrated from the latest {c.market} backtest ({bt.label || `#${bt.id}`},
-          {" "}{bs.trades ?? "?"} trades) on this counter's own risk (pivot − stop).
+          Dashed chart levels calibrated from{" "}
+          {stratBt
+            ? <>the {TACTIC_LABEL[activeTactic] || activeTactic} backtest ({bt.label || `#${bt.id}`}, {bs.trades ?? "?"} trades)</>
+            : <>the latest {c.market} backtest ({bt.label || `#${bt.id}`}, {bs.trades ?? "?"} trades) —
+               no {TACTIC_LABEL[activeTactic] || activeTactic}-specific run saved yet, so this may
+               not match the active tactic</>}
+          {" "}on this counter's own risk (pivot − stop).
         </div>
       )}
     </>

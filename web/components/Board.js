@@ -15,7 +15,7 @@ const FILTER_KEY = "sepa-screener-filters";
    Action-first survives inside the shape: the rail is ordered Buy -> Close to
    ready -> Watching -> Position -> Forming, so the first thing your eye lands
    on is still the only question that matters at 8:30pm. */
-export default function Board({ run, candidates, regime, btByMarket }) {
+export default function Board({ run, candidates, regime, btByMarket, btByStrategy }) {
   const [q, setQ] = useState("");
   const [minRS, setMinRS] = useState(0);
   const [vcpOnly, setVcpOnly] = useState(false);
@@ -113,7 +113,8 @@ export default function Board({ run, candidates, regime, btByMarket }) {
           {detail && (
             <div style={{ opacity: loading ? 0.55 : 1, transition: "opacity .12s" }}>
               <StockDetail c={detail} regime={regime}
-                latestRun={run?.run_date?.slice(0, 10)} btByMarket={btByMarket} />
+                latestRun={run?.run_date?.slice(0, 10)} btByMarket={btByMarket}
+                btByStrategy={btByStrategy} />
             </div>
           )}
         </div>

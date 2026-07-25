@@ -81,6 +81,29 @@ export async function latestBacktestStatsByMarket() {
   return out;
 }
 
+export async function latestBacktestStatsByStrategy() {
+  // newest backtest per (market, strategy) — a candidate's setup.active_tactic
+  // names WHICH tactic's entry/stop are live on that counter today; this is
+  // what lets the dossier show that tactic's own track record instead of
+  // whatever strategy the most recent backtest run (usually nightly breakout)
+  // happened to test. Rows saved before params.strategy existed default to
+  // 'breakout', matching backtest.py's own DEFAULTS.
+  const rows = await db()`
+    SELECT DISTINCT ON (params->>'market', COALESCE(params->>'strategy', 'breakout'))
+           params->>'market' AS market,
+           COALESCE(params->>'strategy', 'breakout') AS strategy,
+           id, label, created_at, stats
+    FROM backtests
+    WHERE params->>'market' IS NOT NULL
+    ORDER BY params->>'market', COALESCE(params->>'strategy', 'breakout'), created_at DESC`;
+  const out = {};
+  for (const r of rows) {
+    out[r.market] = out[r.market] || {};
+    out[r.market][r.strategy] = JSON.parse(JSON.stringify(r));
+  }
+  return out;
+}
+
 export async function latestReview() {
   try {
     const rows = await db()`
