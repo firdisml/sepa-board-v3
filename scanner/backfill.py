@@ -26,6 +26,9 @@ def main() -> int:
     ap.add_argument("--market", choices=["US", "MY", "ALL"], default="MY")
     ap.add_argument("--years", type=int, default=2)
     ap.add_argument("--limit", type=int, help="first N symbols only (rehearsal)")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="skip the first N symbols — resume a long seed after "
+                         "a timeout without re-pulling what already landed")
     args = ap.parse_args()
 
     markets = ["US", "MY"] if args.market == "ALL" else [args.market]
@@ -35,6 +38,8 @@ def main() -> int:
     for market in markets:
         directory = warehouse.eodhd_symbols(market)
         tickers = list(directory["ticker"])
+        if args.offset:
+            tickers = tickers[args.offset:]
         if args.limit:
             tickers = tickers[: args.limit]
         # Seed NAMES from the vendor directory. MY names come from KLSE

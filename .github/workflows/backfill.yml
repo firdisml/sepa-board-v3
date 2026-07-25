@@ -16,6 +16,9 @@ on:
       limit:
         description: "First N symbols only (rehearsal); empty = all"
         default: ""
+      offset:
+        description: "Skip first N symbols (resume after a timeout)"
+        default: ""
 
 concurrency:
   group: backfill
@@ -44,7 +47,9 @@ jobs:
           BF_MARKET: ${{ inputs.market }}
           BF_YEARS: ${{ inputs.years }}
           BF_LIMIT: ${{ inputs.limit }}
+          BF_OFFSET: ${{ inputs.offset }}
         run: |
           ARGS="--market $BF_MARKET --years $BF_YEARS"
           if [ -n "$BF_LIMIT" ]; then ARGS="$ARGS --limit $BF_LIMIT"; fi
+          if [ -n "$BF_OFFSET" ]; then ARGS="$ARGS --offset $BF_OFFSET"; fi
           python -m scanner.backfill $ARGS

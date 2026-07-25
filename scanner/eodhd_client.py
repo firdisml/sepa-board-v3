@@ -213,8 +213,22 @@ def symbols(exchange: str, include_delisted: bool = True) -> pd.DataFrame:
         "ticker": [to_internal(c, exchange) for c in df["Code"].astype(str)],
         "name": df.get("Name", pd.Series(dtype=str)).astype(str),
         "type": df.get("Type", pd.Series(dtype=str)).astype(str),
+        # sub-exchange within the composite directory (US: NYSE/NASDAQ/PINK/…)
+        "exchange": df.get("Exchange", pd.Series(dtype=str)).astype(str),
         "delisted": df["delisted"].astype(bool),
     }).drop_duplicates(subset=["ticker"], keep="first")
+
+    if exchange == "US":
+        # The composite US directory carries ~18k "common stocks", roughly
+        # half of them OTC/pink-sheet listings — not SEPA candidates, phantom
+        # entries in the RS percentile pool, and a backfill-time cost that
+        # pushes the seed past GitHub's 6h wall (measured 1.25s/symbol,
+        # 2026-07-25 rehearsal). Listed exchanges only.
+        otc = out["exchange"].str.upper().str.startswith(("OTC", "PINK", "GREY", "EXPM"))
+        if otc.any():
+            log.info("US: dropped %d OTC/pink-sheet symbols (kept %d listed)",
+                     int(otc.sum()), int((~otc).sum()))
+            out = out[~otc]
 
     if exchange == "KLSE":
         # Bursa codes always START numeric (a letter SUFFIX is legitimate —
