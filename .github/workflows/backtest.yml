@@ -22,6 +22,10 @@ on:
       years:
         description: "Years of history"
         default: "2"
+      deep_history:
+        description: "Survivorship fix: per-ticker history incl. delisted counters (slower, needed for years > ~1)"
+        type: boolean
+        default: false
       label:
         description: "Label for this run"
         default: ""
@@ -48,16 +52,23 @@ jobs:
       - name: Run backtest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # only consumed when --deep-history calls eod.symbols()/eod.history();
+          # a plain warehouse-backed run never touches the network
+          EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
           # inputs are passed as env, never interpolated into the shell (§11.1)
           BT_UNIVERSE: ${{ inputs.universe || 'MY' }}
           BT_STRATEGY: ${{ inputs.strategy || 'breakout' }}
           BT_YEARS: ${{ inputs.years || '2' }}
+          BT_DEEP_HISTORY: ${{ inputs.deep_history && 'true' || 'false' }}
           BT_LABEL: ${{ inputs.label }}
         run: |
           LABEL="${BT_LABEL:-nightly $(date -u +%F)}"
+          DEEP_FLAG=""
+          if [ "$BT_DEEP_HISTORY" = "true" ]; then DEEP_FLAG="--deep-history"; fi
           python -m scanner.backtest \
             --universe "$BT_UNIVERSE" \
             --markets "$BT_UNIVERSE" \
             --strategy "$BT_STRATEGY" \
             --years "$BT_YEARS" \
+            $DEEP_FLAG \
             --label "$LABEL"

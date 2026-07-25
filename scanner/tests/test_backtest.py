@@ -278,3 +278,109 @@ class TestCosts:
             df = data[t["ticker"]]
             o = float(df.loc[t["entry_date"], "Open"])
             assert t["entry"] >= o
+
+
+class TestDeepHistory:
+    """--deep-history: survivorship fix (NEXT.md §1). Everything network- and
+    DB-shaped is monkeypatched; only the selection/caching logic is under test."""
+
+    def _hist_df(self, n=300, base=10.0):
+        idx = pd.bdate_range("2023-01-02", periods=n)
+        c = base * np.cumprod(1 + 0.0005 * np.ones(n))
+        return pd.DataFrame({"Open": c, "High": c * 1.01, "Low": c * 0.99,
+                             "Close": c, "Volume": np.full(n, 2_000_000.0)}, index=idx)
+
+    def _directory(self):
+        import pandas as pd
+        return pd.DataFrame([
+            {"ticker": "1111.KL", "name": "Live Liquid", "type": "Common Stock", "delisted": False},
+            {"ticker": "2222.KL", "name": "Live Illiquid", "type": "Common Stock", "delisted": False},
+            {"ticker": "3333.KL", "name": "Dead Co", "type": "Common Stock", "delisted": True},
+        ])
+
+    def _patch_common(self, monkeypatch):
+        from scanner import backtest as bt
+        from scanner import scan as scanmod
+        from scanner import warehouse
+
+        monkeypatch.setattr(bt.eod, "symbols", lambda exchange, include_delisted=True: self._directory())
+        # warehouse window only ever contains LIVE tickers, per its own docstring
+        monkeypatch.setattr(warehouse, "load_window", lambda conn, market, min_bars=200: {
+            "1111.KL": self._hist_df(base=10.0),   # passes scan.py's liquidity floor
+            "2222.KL": self._hist_df(base=0.05),   # fails on price (SCAN_MY_MIN_PRICE)
+        })
+
+        calls = {"history": []}
+
+        def fake_history(ticker, years=2):
+            calls["history"].append(ticker)
+            if ticker == "3333.KL":
+                return self._hist_df(n=280, base=3.0)
+            return self._hist_df(n=300, base=10.0)
+
+        monkeypatch.setattr(bt.eod, "history", fake_history)
+        return calls
+
+    def test_includes_delisted_and_liquid_live_only(self, monkeypatch, tmp_path):
+        from scanner import backtest as bt
+        monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
+        calls = self._patch_common(monkeypatch)
+
+        data = bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
+
+        assert set(data) == {"1111.KL", "3333.KL"}     # illiquid live 2222.KL dropped
+        assert set(calls["history"]) == {"1111.KL", "3333.KL"}
+
+    def test_second_run_reads_from_parquet_cache(self, monkeypatch, tmp_path):
+        from scanner import backtest as bt
+        monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
+        calls = self._patch_common(monkeypatch)
+
+        bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
+        assert len(calls["history"]) == 2
+
+        bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
+        assert len(calls["history"]) == 2               # no new API calls second run
+
+    def test_min_bars_drops_short_delisted_history(self, monkeypatch, tmp_path):
+        from scanner import backtest as bt
+        monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
+        self._patch_common(monkeypatch)
+
+        data = bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=290)
+        assert "3333.KL" not in data                    # 280 bars < 290 min_bars
+        assert "1111.KL" in data
+
+    def test_unavailable_ticker_is_skipped_not_raised(self, monkeypatch, tmp_path):
+        from scanner import backtest as bt
+        monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
+        self._patch_common(monkeypatch)
+
+        def flaky_history(ticker, years=2):
+            if ticker == "3333.KL":
+                raise bt.eod.DataUnavailable("no history")
+            return self._hist_df(n=300, base=10.0)
+
+        monkeypatch.setattr(bt.eod, "history", flaky_history)
+        data = bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
+        assert "3333.KL" not in data
+        assert "1111.KL" in data
+
+
+class TestKlseAliasFilterWarnsOnDelisted:
+    def test_delisted_row_dropped_by_alias_filter_logs_warning(self, monkeypatch, caplog):
+        import logging
+        from scanner import eodhd_client as eod
+
+        rows_live = [{"Code": "HEXTAR", "Name": "Hextar Alias", "Type": "Common Stock"}]
+        rows_dead = [{"Code": "OLDCO", "Name": "Old Delisted Co", "Type": "Common Stock"}]
+
+        def fake_get(path, **params):
+            return rows_dead if params.get("delisted") == "1" else rows_live
+
+        monkeypatch.setattr(eod, "_get", fake_get)
+        with caplog.at_level(logging.WARNING):
+            out = eod.symbols("KLSE", include_delisted=True)
+
+        assert list(out["ticker"]) == []                 # both non-numeric, both dropped
+        assert any("DELISTED symbols dropped" in r.message for r in caplog.records)

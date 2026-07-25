@@ -228,8 +228,18 @@ def symbols(exchange: str, include_delisted: bool = True) -> pd.DataFrame:
         # klse_client, which needs a numeric code to build its URL.
         alias = out[~out["ticker"].str[0].str.isdigit()]
         if len(alias):
-            log.info("KLSE: dropped %d non-numeric alias symbols: %s",
-                     len(alias), sorted(alias["ticker"])[:8])
+            dropped_delisted = int(alias["delisted"].sum())
+            log.info("KLSE: dropped %d non-numeric alias symbols (%d delisted): %s",
+                     len(alias), dropped_delisted, sorted(alias["ticker"])[:8])
+            if dropped_delisted:
+                # this filter exists to kill live aliases (HEXTAR/HLIND/ICON/KLCC);
+                # a delisted row caught by it may be a genuine survivorship-fix
+                # target, not an alias — surface it rather than dropping quietly
+                log.warning(
+                    "KLSE: %d DELISTED symbols dropped by the numeric-code filter — "
+                    "verify these are true vendor aliases, not rows the backtest "
+                    "survivorship fix needs to keep: %s", dropped_delisted,
+                    sorted(alias.loc[alias["delisted"], "ticker"])[:20])
             out = out[out["ticker"].str[0].str.isdigit()]
 
     log.info("symbols %s: %d common stocks (%d delisted)",

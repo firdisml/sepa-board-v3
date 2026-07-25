@@ -46,8 +46,14 @@ import os
 import numpy as np
 import pandas as pd
 
+from . import eodhd_client as eod
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("backtest")
+
+# --deep-history parquet cache, keyed on ticker+years — a re-run without it
+# re-pays a full history() call per survivor (NEXT.md §1's ~130 API calls).
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", ".cache", "deep_history")
 
 DEFAULTS = dict(risk_pct=1.0, stop_pct=0.08, max_open=8, max_pos_pct=0.25,
                 max_hold=40, start_equity=100_000.0, strategy="breakout")
@@ -419,6 +425,99 @@ def bootstrap_risk(trades: list[dict], start: float, risk_pct: float = 0.01,
     }
 
 
+def _cache_path(ticker: str, years: int) -> str:
+    return os.path.join(CACHE_DIR, f"{ticker.replace('/', '_')}_{years}y.parquet")
+
+
+def _cached_history(ticker: str, years: int) -> pd.DataFrame | None:
+    path = _cache_path(ticker, years)
+    if not os.path.exists(path):
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception as e:
+        log.warning("deep-history cache unreadable for %s, refetching: %s", ticker, e)
+        return None
+
+
+def _save_cache(ticker: str, years: int, df: pd.DataFrame) -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    df.to_parquet(_cache_path(ticker, years))
+
+
+def load_deep_history(conn, market: str, years: int, min_bars: int = 260) -> dict[str, pd.DataFrame]:
+    """Full-universe history INCLUDING delisted counters (PLAN §9 upgrade A,
+    NEXT.md §1's survivorship fix).
+
+    warehouse.load_window only ever sees currently-listed tickers over a
+    rolling ~420-session window: every counter that collapsed and delisted
+    during the tested period is invisible, and the window is too short to
+    test more than one regime. This pulls per-ticker deep history on demand
+    instead:
+
+      1. liquidity-filter the LIVE universe with the warehouse's cheap 20d
+         value (scan.py's own gate) — pulling full history for ~1,000 names
+         nobody could have traded is not worth ~1,000 API calls.
+      2. include EVERY delisted counter unconditionally. There is no cheap
+         liquidity signal for a name that no longer trades, and pre-filtering
+         them defeats the entire point of this function.
+      3. history() each survivor, cached to parquet keyed on ticker+years so
+         a re-run costs zero further calls.
+    """
+    from . import scan as scanmod
+    from . import warehouse
+
+    exchange = eod.EXCHANGES[market]
+    directory = eod.symbols(exchange, include_delisted=True)
+    live_codes = set(directory.loc[~directory["delisted"], "ticker"])
+    delisted_codes = set(directory.loc[directory["delisted"], "ticker"])
+    log.info("deep-history %s directory: %d live, %d delisted",
+             market, len(live_codes), len(delisted_codes))
+    if not delisted_codes:
+        log.warning(
+            "deep-history %s: zero delisted symbols returned — the survivorship "
+            "fix is a no-op this run. Check eod.symbols(include_delisted=True) "
+            "and the KLSE numeric-code filter before trusting these results.", market)
+
+    mcfg = scanmod.MARKETS.get(market)
+    if mcfg is not None:
+        window = warehouse.load_window(conn, market, min_bars=min_bars)
+        liquid_live = set(scanmod.liquidity_filter(window, mcfg))
+    else:
+        liquid_live = live_codes
+        log.warning("deep-history %s: no scan config for this market — "
+                     "skipping the liquidity pre-filter on live tickers", market)
+
+    targets = sorted(liquid_live | delisted_codes)
+    log.info("deep-history %s: %d survivors to fetch (%d liquid live + %d delisted)",
+             market, len(targets), len(liquid_live), len(delisted_codes))
+
+    data: dict[str, pd.DataFrame] = {}
+    fetched = cached = failed = 0
+    for i, t in enumerate(targets, 1):
+        df = _cached_history(t, years)
+        if df is None:
+            try:
+                df = eod.history(t, years=years)
+                _save_cache(t, years, df)
+                fetched += 1
+            except eod.DataUnavailable as e:
+                failed += 1
+                log.debug("deep-history %s: %s unavailable: %s", market, t, e)
+                continue
+        else:
+            cached += 1
+        if len(df) >= min_bars:
+            data[t] = df
+        if i % 25 == 0:
+            log.info("deep-history %s: %d/%d (%d fetched, %d cached, %d failed)",
+                     market, i, len(targets), fetched, cached, failed)
+    log.info("deep-history %s complete: %d tickers with >=%d bars "
+             "(%d fetched, %d cached, %d failed)",
+             market, len(data), min_bars, fetched, cached, failed)
+    return data
+
+
 def _board_tickers(conn) -> list[str]:
     with conn.cursor() as cur:
         cur.execute("""SELECT DISTINCT c.ticker FROM candidates c
@@ -438,6 +537,13 @@ def main() -> int:
                          "cannot tell you what the rules would have found in 2024.")
     ap.add_argument("--min-bars", type=int, default=260,
                     help="skip warehouse tickers with less history than this")
+    ap.add_argument("--deep-history", action="store_true",
+                    help="pull per-ticker history incl. DELISTED counters via "
+                         "eodhd_client.history(), instead of the warehouse's "
+                         "~13-month live-only window. Fixes survivorship bias and "
+                         "supports multi-year --years (PLAN §9 upgrade A, "
+                         "NEXT.md §1). Requires --universe; results are cached "
+                         "to .cache/deep_history/*.parquet.")
     ap.add_argument("--markets", default="US,MY",
                     help="comma-separated markets to test; each runs as its OWN "
                          "backtest with its own equity curve (default US,MY)")
@@ -473,10 +579,17 @@ def main() -> int:
     if a.universe:
         if conn is None:
             conn = dbmod.connect()
-        data = warehouse.load_window(conn, a.universe, min_bars=a.min_bars)
-        log.info("Full-universe backtest: %d %s tickers with >=%d bars",
-                 len(data), a.universe, a.min_bars)
+        if a.deep_history:
+            data = load_deep_history(conn, a.universe, years=a.years, min_bars=a.min_bars)
+            log.info("Deep-history backtest: %d %s tickers with >=%d bars (incl. delisted)",
+                     len(data), a.universe, a.min_bars)
+        else:
+            data = warehouse.load_window(conn, a.universe, min_bars=a.min_bars)
+            log.info("Full-universe backtest: %d %s tickers with >=%d bars",
+                     len(data), a.universe, a.min_bars)
     else:
+        if a.deep_history:
+            ap.error("--deep-history requires --universe")
         if a.tickers:
             tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
         elif a.from_board:
@@ -519,6 +632,7 @@ def main() -> int:
         if a.universe:
             result["params"]["universe"] = a.universe
             result["params"]["ticker_count"] = len(tickers_m)
+            result["params"]["deep_history"] = bool(a.deep_history)
         else:
             result["params"]["tickers"] = sorted(tickers_m)
         result["params"]["years"] = a.years
