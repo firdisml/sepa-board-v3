@@ -1,0 +1,50 @@
+name: backfill
+
+on:
+  # Dispatch-only: a warehouse seed is a deliberate, hours-long, ~18k-call
+  # operation (US) — never something a cron should fire on its own.
+  workflow_dispatch:
+    inputs:
+      market:
+        description: "Market to seed"
+        type: choice
+        options: [US, MY, ALL]
+        default: US
+      years:
+        description: "Years of history per symbol"
+        default: "2"
+      limit:
+        description: "First N symbols only (rehearsal); empty = all"
+        default: ""
+
+concurrency:
+  group: backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # US is ~18k history() calls at roughly 0.4s each ≈ 2h; leave headroom
+    # but die well before GitHub's 6h wall.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scanner/requirements.txt
+      - name: Install dependencies
+        run: pip install -r scanner/requirements.txt
+      - name: Backfill warehouse
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
+          # inputs as env, never interpolated (§11.1)
+          BF_MARKET: ${{ inputs.market }}
+          BF_YEARS: ${{ inputs.years }}
+          BF_LIMIT: ${{ inputs.limit }}
+        run: |
+          ARGS="--market $BF_MARKET --years $BF_YEARS"
+          if [ -n "$BF_LIMIT" ]; then ARGS="$ARGS --limit $BF_LIMIT"; fi
+          python -m scanner.backfill $ARGS

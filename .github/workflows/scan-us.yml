@@ -1,0 +1,56 @@
+name: scan-us
+
+on:
+  # NYSE/NASDAQ close 20:00 UTC (summer) / 21:00 UTC (winter); EODHD documents
+  # US bulk EOD at close +15min. 22:00 UTC covers both clocks with margin.
+  # The freshness gate aborts rather than publishing a day-late board, so a
+  # late feed costs a skipped scan, never a silently wrong one. Separate
+  # workflow from scan-my on purpose: a US failure must never redden Bursa.
+  schedule:
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Bypass the trading-calendar session check (SCAN_FORCE)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Run the pipeline but write nothing to the database"
+        type: boolean
+        default: false
+
+concurrency:
+  group: scan-us
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    # US skips the KLSE Screener enrichment entirely (no dossier throttle),
+    # so wall time is bulk ingest + compute
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scanner/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scanner/requirements.txt
+
+      # PLAN §11.2 — tests gate the scan
+      - name: Tests
+        run: python -m pytest scanner/tests -q
+
+      - name: Scan US
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
+          SCAN_MARKETS: US
+          # inputs are passed as env, never interpolated into the shell (§11.1)
+          SCAN_FORCE: ${{ inputs.force && '1' || '' }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: python -m scanner.scan

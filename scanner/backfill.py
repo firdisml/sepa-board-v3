@@ -33,9 +33,30 @@ def main() -> int:
     warehouse.ensure_schema(conn)
 
     for market in markets:
-        tickers = list(warehouse.eodhd_symbols(market)["ticker"])
+        directory = warehouse.eodhd_symbols(market)
+        tickers = list(directory["ticker"])
         if args.limit:
             tickers = tickers[: args.limit]
+        # Seed NAMES from the vendor directory. MY names come from KLSE
+        # Screener's universe table at scan time; US has no equivalent source,
+        # so without this every US candidate renders nameless. COALESCE keeps
+        # any richer name/industry/sector already stored (never NULL them —
+        # that's the save_ticker_meta trap).
+        seed = directory[directory["ticker"].isin(set(tickers))]
+        with conn.cursor() as cur:
+            for _, r in seed.iterrows():
+                if not r["name"] or r["name"] == "nan":
+                    continue
+                cur.execute(
+                    """INSERT INTO ticker_meta (ticker, name)
+                       VALUES (%s, %s)
+                       ON CONFLICT (ticker) DO UPDATE
+                           SET name = COALESCE(ticker_meta.name, EXCLUDED.name),
+                               updated_at = now()""",
+                    (r["ticker"], str(r["name"])[:120]))
+        conn.commit()
+        log.info("seeded %d %s names into ticker_meta", len(seed), market)
+
         log.info("backfilling %s: %d symbols x %dy", market, len(tickers), args.years)
         warehouse.backfill(conn, market, years=args.years, tickers=tickers)
 

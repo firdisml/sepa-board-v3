@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       universe:
-        description: "Whole exchange (MY) instead of the board"
+        description: "Whole exchange instead of the board"
         type: choice
-        options: ["MY", ""]
+        options: ["MY", "US", ""]
         default: "MY"
       strategy:
         description: "Entry strategy"

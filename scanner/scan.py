@@ -45,9 +45,15 @@ MARKETS = {
         "min_dollar_vol": float(os.environ.get("SCAN_MY_MIN_DOLLAR_VOL", 2_000_000)),
         "min_adr": float(os.environ.get("SCAN_MY_MIN_ADR", 1.5)),
     },
-    # "US": {"calendar": "NYSE", "indices": ["SPY", "QQQ"], "currency": "$",
-    #        "lot_size": 1, "min_price": 10.0, "min_dollar_vol": 5_000_000,
-    #        "min_adr": 2.5},
+    # Reactivated 2026-07-26 (scan-us.yml). Fundamentals/street/news stay
+    # MY-only (KLSE Screener has no US coverage) — US candidates carry
+    # price-derived data with fundamentals honestly withheld until an EODHD
+    # fundamentals source lands.
+    "US": {"calendar": "NYSE", "indices": ["SPY", "QQQ"], "currency": "$",
+           "lot_size": 1,
+           "min_price": float(os.environ.get("SCAN_MIN_PRICE", 10.0)),
+           "min_dollar_vol": float(os.environ.get("SCAN_MIN_DOLLAR_VOL", 5_000_000)),
+           "min_adr": float(os.environ.get("SCAN_US_MIN_ADR", 2.5))},
 }
 
 CAPS = {"swing": 20, "position": 30, "watchlist": 20, "forming": 15}
@@ -597,6 +603,10 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
     budget = street_max
     to_fetch = set()
     for c in order:
+        # KLSE Screener covers Bursa only — a US ticker in this queue would
+        # burn a budget slot on a fetch that can only 404
+        if c.get("market") != "MY":
+            continue
         if needs_fetch(c["ticker"]) and budget > 0:
             to_fetch.add(c["ticker"])
             budget -= 1
