@@ -5,7 +5,35 @@ re-deriving anything. Read `PLAN.md` §9 and §12.1 for the surrounding context.
 
 ---
 
-## 1. Backtest: fix survivorship + extend to 5 years  ← DO THIS FIRST
+## 1. Backtest: fix survivorship + extend to 5 years  ← DONE 2026-07-25/26
+
+Shipped as `--deep-history` (backtest.py `load_deep_history`). Results on the
+fair basis (5y, full universe, delisted included, RS ranked on all ~1,062):
+breakout +0.33R / CAGR 10.3% / DD -35.4% (id=7); buyable_gap_up +0.30R /
+DD -17.8% (id=9, NEW strategy); pocket_pivot +0.08R / DD -45.1% (id=8, NEW,
+weak — do not promote). ma20/ma50/EP still await deep-history re-measurement.
+
+Findings recorded while doing it:
+- The gotcha was real at scale: EODHD flags **97 live blue-chips** (AEON,
+  AXIATA, BAT, BURSA…) as "delisted" under stale alphabetic alias codes. The
+  numeric-code filter catches them; `load_deep_history` also excludes any
+  "delisted" ticker whose last bar is <=15 days old, and logs both.
+- **Census (2026-07-26, public sources):** Bursa ~987 listed (2023) →
+  ~1,072 (2025); ~200+ IPOs over 2021-2025 vs net +~130 ⇒ implies roughly
+  **80-100 genuine delistings in 5y**. EODHD serves 112 delisted numeric-code
+  names ⇒ the delisted directory is plausibly near-complete, NOT badly thin.
+  Residual risk: the ~58 per-run fetch failures — failures are now logged by
+  name with delisted/live split and reason classes; check the next run's log
+  to see whether the failed names skew delisted (real survivorship holes).
+- The liquidity pre-filter sketched in the original spec was WRONG — it
+  shrank the RS-rank pool to ~230 names and inflated results (+0.88R). Fetch
+  the whole directory; RS must rank the full universe (scan.py's own rule).
+- CI now caches `.cache/deep_history` per ISO week (actions/cache), so
+  same-week re-runs cost ~0 API calls.
+
+---
+
+## 1b. (superseded original spec, kept for context)
 
 **Why:** the current backtest reads `warehouse.load_window`, which holds only
 **currently listed** counters on a rolling ~420-session window (§3.3). Two

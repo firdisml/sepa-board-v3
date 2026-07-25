@@ -51,6 +51,18 @@ jobs:
           cache-dependency-path: scanner/requirements.txt
       - name: Install dependencies
         run: pip install -r scanner/requirements.txt
+      # deep-history parquet cache: without this every deep run re-pays ~1,100
+      # EODHD calls. Keyed per ISO week — histories go stale gradually, and a
+      # weekly re-pull keeps recent bars honest while the 5y depth stays cached.
+      # restore-keys lets a new week warm-start from last week's cache.
+      - name: Compute cache week
+        id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore deep-history cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/deep_history
+          key: deep-history-${{ inputs.years || '2' }}y-${{ steps.week.outputs.week }}
       - name: Run backtest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

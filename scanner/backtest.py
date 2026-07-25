@@ -555,6 +555,7 @@ def load_deep_history(market: str, years: int, min_bars: int = 260,
 
     today = dt.date.today()
     data: dict[str, pd.DataFrame] = {}
+    failures: list[tuple[str, bool, str]] = []   # (ticker, was_delisted, reason)
     fetched = cached = failed = mislabeled = 0
     for i, t in enumerate(targets, 1):
         df = _cached_history(t, years)
@@ -565,7 +566,7 @@ def load_deep_history(market: str, years: int, min_bars: int = 260,
                 fetched += 1
             except eod.DataUnavailable as e:
                 failed += 1
-                log.debug("deep-history %s: %s unavailable: %s", market, t, e)
+                failures.append((t, t in delisted_codes, str(e)))
                 continue
         else:
             cached += 1
@@ -589,6 +590,25 @@ def load_deep_history(market: str, years: int, min_bars: int = 260,
     log.info("deep-history %s complete: %d tickers with >=%d bars "
              "(%d fetched, %d cached, %d failed, %d mislabeled-delisted excluded)",
              market, len(data), min_bars, fetched, cached, failed, mislabeled)
+    if failures:
+        # name every failure so a systematic problem (a code-format change, a
+        # plan-tier refusal) is distinguishable from ordinary vendor gaps on
+        # thin/ancient names. A failed DELISTED ticker matters most: it is a
+        # survivorship hole this function exists to close.
+        dead = [(t, r) for t, was_dead, r in failures if was_dead]
+        live = [(t, r) for t, was_dead, r in failures if not was_dead]
+        if dead:
+            log.warning("deep-history %s: %d DELISTED tickers had no history — each "
+                        "is a residual survivorship hole: %s",
+                        market, len(dead), [t for t, _ in dead])
+        if live:
+            log.warning("deep-history %s: %d live tickers had no history: %s",
+                        market, len(live), [t for t, _ in live])
+        reasons = {}
+        for _, _, r in failures:
+            key = r.split(":")[0][:60]   # collapse per-ticker detail into classes
+            reasons[key] = reasons.get(key, 0) + 1
+        log.warning("deep-history %s failure reasons: %s", market, reasons)
     return data
 
 
