@@ -2,6 +2,7 @@ import { latestBundle, backtests, backtestById } from "@/lib/db";
 import Shell from "@/components/Shell";
 import LineChart from "@/components/LineChart";
 import RunPicker from "@/components/RunPicker";
+import BacktestWinner from "@/components/BacktestWinner";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,8 @@ export default async function Backtests({ searchParams }) {
         </div>
       ) : (
         <>
+          <BacktestWinner runs={runs} />
+
           <div className="stats">
             <div className="stat"><div className="k">Expectancy per trade</div><div className={"v " + ((s.expectancy_r ?? 0) > 0 ? "green" : "red")}>{s.expectancy_r ?? "—"}R</div><div className="sub">{s.trades} trades over {sel.params?.years}y · {sel.params?.ticker_count ?? (sel.params?.tickers || []).length} tickers{sel.params?.universe ? " (full universe)" : ""}</div></div>
             <div className="stat"><div className="k">CAGR</div><div className={"v " + ((s.cagr_pct ?? 0) > 0 ? "green" : "red")}>{s.cagr_pct}%</div><div className="sub">start {Number(sel.params?.start_equity || 0).toLocaleString()} → final {Number(s.final_equity || 0).toLocaleString()}</div></div>
