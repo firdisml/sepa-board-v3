@@ -17,6 +17,7 @@ const BACKTEST = {
 const LABEL = {
   breakout: "Breakout", early_entry: "Early entry", ma20_bounce: "20MA bounce",
   ma50_bounce: "50MA bounce", episodic_pivot: "Episodic pivot",
+  pocket_pivot: "Pocket pivot", buyable_gap_up: "Buyable gap-up",
 };
 
 function stats(rows) {

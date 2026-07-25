@@ -162,6 +162,80 @@ class TestEpisodicPivotStrategy:
         assert sig["FLAT"].sum() == 0
 
 
+class TestPocketPivotStrategy:
+    def _pp_df(self):
+        idx = pd.bdate_range("2024-01-02", periods=400)
+        n = len(idx)
+        c = np.empty(n); v = np.full(n, 500_000.0)
+        c[0] = 50.0
+        for i in range(1, n):
+            if i < n - 6:
+                c[i] = c[i - 1] * 1.003              # long uptrend -> trend template true
+            elif i < n - 1:
+                c[i] = c[i - 1] * 0.996               # tight pullback, down days
+                v[i] = 400_000.0                       # modest down-day volume
+            else:
+                c[i] = c[i - 1] * 1.02                 # pocket pivot day
+                v[i] = 1_200_000.0                     # beats every recent down-day volume
+        o = c * 0.999
+        h = c * 1.006
+        l = c * 0.985                                  # (c-l)/(h-l) ~ 0.71 -> top-third close
+        return pd.DataFrame({"Open": o, "High": h, "Low": l, "Close": c, "Volume": v}, index=idx)
+
+    def test_volume_thrust_inside_base_fires(self):
+        data = {"PP": self._pp_df(), "FLAT": make_df(trend=0.0, seed=3)}
+        sig = signals(data, strategy="pocket_pivot")
+        assert bool(sig["PP"].iloc[-1])
+        assert sig["FLAT"].sum() == 0
+
+    def test_not_trend_gated_stocks_never_fire(self):
+        # a pocket-pivot-shaped volume day on a stock that ISN'T in a
+        # confirmed uptrend must not fire — this backtest gates on the Trend
+        # Template even though the live indicators.pocket_pivot() does not
+        df = self._pp_df()
+        flat_base = df.copy()
+        flat_base["Close"] = 50.0 * np.ones(len(df))    # kill the uptrend entirely
+        flat_base["Open"] = flat_base["Close"] * 0.999
+        flat_base["High"] = flat_base["Close"] * 1.006
+        flat_base["Low"] = flat_base["Close"] * 0.994
+        sig = signals({"NOTREND": flat_base}, strategy="pocket_pivot")
+        assert sig["NOTREND"].sum() == 0
+
+
+class TestBuyableGapUpStrategy:
+    def _bgu_df(self):
+        idx = pd.bdate_range("2024-01-02", periods=400)
+        n = len(idx)
+        c = np.empty(n); v = np.full(n, 500_000.0)
+        c[0] = 50.0
+        for i in range(1, n):
+            if i < n - 30:
+                c[i] = c[i - 1] * 1.002                        # steady uptrend
+            elif i < n - 1:
+                c[i] = c[i - 1] * (1.0003 if i % 2 else 0.9997)  # tight base under the pivot
+            else:
+                c[i] = c[i - 1] * 1.06                          # gap day: +6%
+                v[i] = 3_000_000.0                               # 2x+ the 50d average
+        o = c * 0.999
+        h = c * 1.004
+        l = c * 0.996
+        return pd.DataFrame({"Open": o, "High": h, "Low": l, "Close": c, "Volume": v}, index=idx)
+
+    def test_full_gap_on_volume_at_pivot_fires(self):
+        data = {"BGU": self._bgu_df(), "FLAT": make_df(trend=0.0, seed=3)}
+        sig = signals(data, strategy="buyable_gap_up")
+        assert bool(sig["BGU"].iloc[-1])
+        assert sig["FLAT"].sum() == 0
+
+    def test_overlapping_gap_does_not_fire(self):
+        # same-size move but the low does NOT clear the prior high -> not a
+        # full gap, must not fire even though every other condition holds
+        df = self._bgu_df()
+        df.iloc[-1, df.columns.get_loc("Low")] = df["High"].iloc[-2] * 0.999
+        sig = signals({"BGU": df}, strategy="buyable_gap_up")
+        assert not bool(sig["BGU"].iloc[-1])
+
+
 class TestStats:
     def test_empty_safe(self):
         assert "note" in compute_stats([], [], 100000)

@@ -27,6 +27,18 @@ breakout + volume, NOT on VCP quality — per-day VCP detection over a full
 history is expensive and is the next iteration. Expect the live board's picks
 to be a tighter subset of these trades.
 
+STRATEGIES beyond the default breakout (see `signals()`/`_signals_one_market`
+for each one's exact vectorized rule): ma20_bounce / ma50_bounce (pullback
+at a rising MA), episodic_pivot (gap on volume out of neglect — a measured
+hazard, not a tradeable setup, PLAN §12.1), pocket_pivot (O'Neil/Kacher
+volume thrust inside the base, before the breakout) and buyable_gap_up
+(O'Neil/Kacher full gap on 2x+ volume at the pivot). pocket_pivot and
+buyable_gap_up are ALREADY DETECTED on the live board (setup.pocket_pivot,
+scan.py's inline gap_up check) but not yet part of the active_tactic
+rotation traders see — this project's rule is measure before promote (see
+episodic_pivot's demotion history), so they exist here to be backtested
+first.
+
 Run:
   python -m scanner.backtest --tickers NVDA,PLTR,CRWD --years 3
   python -m scanner.backtest --from-board --years 3        # latest candidates
@@ -58,7 +70,8 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", ".cache", "deep_histor
 DEFAULTS = dict(risk_pct=1.0, stop_pct=0.08, max_open=8, max_pos_pct=0.25,
                 max_hold=40, start_equity=100_000.0, strategy="breakout")
 
-STRATEGIES = ("breakout", "ma20_bounce", "ma50_bounce", "episodic_pivot")
+STRATEGIES = ("breakout", "ma20_bounce", "ma50_bounce", "episodic_pivot",
+             "pocket_pivot", "buyable_gap_up")
 
 # Per-side transaction costs, applied to EVERY fill (v1.3 "Slippage"):
 #   slip_pct — price impact: buys fill above the reference price, sells below.
@@ -91,7 +104,7 @@ def _by_market(data: dict[str, pd.DataFrame]) -> dict[str, dict[str, pd.DataFram
 
 def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout") -> pd.DataFrame:
     """Entry signals for tickers sharing ONE trading calendar."""
-    C, H, L, V = (_matrix(data, f) for f in ("Close", "High", "Low", "Volume"))
+    C, H, L, V, O = (_matrix(data, f) for f in ("Close", "High", "Low", "Volume", "Open"))
 
     ma50 = C.rolling(50).mean()
     ma150 = C.rolling(150).mean()
@@ -143,7 +156,6 @@ def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout
     if strategy == "episodic_pivot":
         # mirror of indicators.episodic_pivot — deliberately NOT trend-gated:
         # EPs fire out of neglect, before the Trend Template can pass
-        O = _matrix(data, "Open")
         pc, ph = C.shift(1), H.shift(1)
         gap_ok = (O > ph) | (O >= pc * 1.04)
         chg = C / pc - 1
@@ -153,6 +165,45 @@ def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout
         return sig.fillna(False)
 
     pivot = H.rolling(25).max().shift(1)          # prior 25d high, never today
+
+    if strategy == "pocket_pivot":
+        # mirror of indicators.pocket_pivot — an O'Neil/Kacher early entry
+        # INSIDE the base: volume beating every down day of the past 10
+        # sessions on an up day that closes in the top third of its range,
+        # un-extended above the 10-day line. indicators.pocket_pivot() is
+        # NOT gated on the live Trend Template (it can fire on the IPO path),
+        # but every other tradeable entry here IS — gating this one too, so
+        # the backtest never risks capital on a volume thrust in a stock
+        # that isn't even in a confirmed uptrend. Revisit if that turns out
+        # to be where the edge actually lives.
+        ma10 = C.rolling(10).mean()
+        prev_close = C.shift(1)
+        up_day = C > prev_close
+        above_ma50 = C > ma50
+        rng = H - L
+        top_third = ((C - L) / rng.where(rng > 0)) >= 0.62
+        near_ma10 = L <= ma10 * 1.02
+        down_vol = V.where(C < prev_close)
+        down_vol_max10 = down_vol.shift(1).rolling(10, min_periods=1).max()
+        vol_thrust = (V > down_vol_max10) & down_vol_max10.notna()
+        sig = up_day & above_ma50 & top_third & near_ma10 & vol_thrust
+        return (tt & sig).fillna(False)
+
+    if strategy == "buyable_gap_up":
+        # mirror of scan.py's inline BGU check (O'Neil/Kacher): a full gap
+        # (today's low above yesterday's high) on 2x+ volume, closing green
+        # and at/above the base pivot — institutional urgency, a valid entry
+        # rather than "extended". Live code reads the VCP-detected pivot;
+        # this uses the same 25d-high proxy as the breakout strategy above
+        # (the honest simplification stated in this module's docstring).
+        prev_high = H.shift(1)
+        vol_ratio = V / vol50
+        gap = L > prev_high
+        green = C > O
+        near_pivot = C >= pivot * 0.98
+        sig = gap & (vol_ratio >= 2) & green & near_pivot
+        return (tt & sig).fillna(False)
+
     cross = (C > pivot) & (C.shift(1) <= pivot.shift(1))
     volume_ok = V > 1.4 * vol50
 
