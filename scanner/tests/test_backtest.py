@@ -1,4 +1,6 @@
 """Backtest engine: no-lookahead replay on synthetic data."""
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -281,34 +283,35 @@ class TestCosts:
 
 
 class TestDeepHistory:
-    """--deep-history: survivorship fix (NEXT.md §1). Everything network- and
-    DB-shaped is monkeypatched; only the selection/caching logic is under test."""
+    """--deep-history: survivorship fix (NEXT.md §1). Everything network-shaped
+    is monkeypatched; only the selection/caching/staleness logic is under test.
 
-    def _hist_df(self, n=300, base=10.0):
-        idx = pd.bdate_range("2023-01-02", periods=n)
+    No liquidity pre-filter: the whole point of this version is that the
+    RS-ranking pool must not be narrowed before signals() sees it (see
+    load_deep_history's docstring for the bug this replaced)."""
+
+    def _hist_df(self, n=300, base=10.0, end=None):
+        # default end date is safely in the past (2023-01-02 + n bdays), well
+        # outside stale_delisted_days of "today" in any real test run
+        if end is not None:
+            idx = pd.bdate_range(end=end, periods=n)
+        else:
+            idx = pd.bdate_range("2023-01-02", periods=n)
         c = base * np.cumprod(1 + 0.0005 * np.ones(n))
         return pd.DataFrame({"Open": c, "High": c * 1.01, "Low": c * 0.99,
                              "Close": c, "Volume": np.full(n, 2_000_000.0)}, index=idx)
 
     def _directory(self):
-        import pandas as pd
         return pd.DataFrame([
-            {"ticker": "1111.KL", "name": "Live Liquid", "type": "Common Stock", "delisted": False},
-            {"ticker": "2222.KL", "name": "Live Illiquid", "type": "Common Stock", "delisted": False},
+            {"ticker": "1111.KL", "name": "Live Co", "type": "Common Stock", "delisted": False},
+            {"ticker": "2222.KL", "name": "Also Live Co", "type": "Common Stock", "delisted": False},
             {"ticker": "3333.KL", "name": "Dead Co", "type": "Common Stock", "delisted": True},
         ])
 
     def _patch_common(self, monkeypatch):
         from scanner import backtest as bt
-        from scanner import scan as scanmod
-        from scanner import warehouse
 
         monkeypatch.setattr(bt.eod, "symbols", lambda exchange, include_delisted=True: self._directory())
-        # warehouse window only ever contains LIVE tickers, per its own docstring
-        monkeypatch.setattr(warehouse, "load_window", lambda conn, market, min_bars=200: {
-            "1111.KL": self._hist_df(base=10.0),   # passes scan.py's liquidity floor
-            "2222.KL": self._hist_df(base=0.05),   # fails on price (SCAN_MY_MIN_PRICE)
-        })
 
         calls = {"history": []}
 
@@ -321,33 +324,34 @@ class TestDeepHistory:
         monkeypatch.setattr(bt.eod, "history", fake_history)
         return calls
 
-    def test_includes_delisted_and_liquid_live_only(self, monkeypatch, tmp_path):
+    def test_fetches_whole_directory_no_liquidity_prefilter(self, monkeypatch, tmp_path):
         from scanner import backtest as bt
         monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
         calls = self._patch_common(monkeypatch)
 
-        data = bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
+        data = bt.load_deep_history(market="MY", years=2, min_bars=200)
 
-        assert set(data) == {"1111.KL", "3333.KL"}     # illiquid live 2222.KL dropped
-        assert set(calls["history"]) == {"1111.KL", "3333.KL"}
+        # both live tickers included regardless of price/volume, plus delisted
+        assert set(data) == {"1111.KL", "2222.KL", "3333.KL"}
+        assert set(calls["history"]) == {"1111.KL", "2222.KL", "3333.KL"}
 
     def test_second_run_reads_from_parquet_cache(self, monkeypatch, tmp_path):
         from scanner import backtest as bt
         monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
         calls = self._patch_common(monkeypatch)
 
-        bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
-        assert len(calls["history"]) == 2
+        bt.load_deep_history(market="MY", years=2, min_bars=200)
+        assert len(calls["history"]) == 3
 
-        bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
-        assert len(calls["history"]) == 2               # no new API calls second run
+        bt.load_deep_history(market="MY", years=2, min_bars=200)
+        assert len(calls["history"]) == 3                # no new API calls second run
 
     def test_min_bars_drops_short_delisted_history(self, monkeypatch, tmp_path):
         from scanner import backtest as bt
         monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
         self._patch_common(monkeypatch)
 
-        data = bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=290)
+        data = bt.load_deep_history(market="MY", years=2, min_bars=290)
         assert "3333.KL" not in data                    # 280 bars < 290 min_bars
         assert "1111.KL" in data
 
@@ -362,9 +366,40 @@ class TestDeepHistory:
             return self._hist_df(n=300, base=10.0)
 
         monkeypatch.setattr(bt.eod, "history", flaky_history)
-        data = bt.load_deep_history(conn=object(), market="MY", years=2, min_bars=200)
+        data = bt.load_deep_history(market="MY", years=2, min_bars=200)
         assert "3333.KL" not in data
         assert "1111.KL" in data
+
+    def test_delisted_ticker_still_trading_recently_is_excluded(self, monkeypatch, tmp_path):
+        # a "delisted" ticker whose fetched history ends yesterday cannot be a
+        # real delisting — it's a live-company alias duplicate (AEON/AXIATA/
+        # BAT-class case found 2026-07-25); must be excluded, not counted
+        from scanner import backtest as bt
+        monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
+        self._patch_common(monkeypatch)
+
+        yesterday = dt.date.today() - dt.timedelta(days=1)
+
+        def fake_history(ticker, years=2):
+            if ticker == "3333.KL":
+                return self._hist_df(n=280, base=3.0, end=yesterday)
+            return self._hist_df(n=300, base=10.0)
+
+        monkeypatch.setattr(bt.eod, "history", fake_history)
+        data = bt.load_deep_history(market="MY", years=2, min_bars=200)
+
+        assert "3333.KL" not in data                    # excluded despite >= min_bars
+        assert {"1111.KL", "2222.KL"} <= set(data)
+
+    def test_genuinely_old_delisted_ticker_is_kept(self, monkeypatch, tmp_path):
+        # sanity check the staleness gate isn't overzealous: a name whose last
+        # bar is years old is exactly what this function exists to include
+        from scanner import backtest as bt
+        monkeypatch.setattr(bt, "CACHE_DIR", str(tmp_path))
+        self._patch_common(monkeypatch)
+
+        data = bt.load_deep_history(market="MY", years=2, min_bars=200)
+        assert "3333.KL" in data                        # last bar is in 2023-2024, not recent
 
 
 class TestKlseAliasFilterWarnsOnDelisted:

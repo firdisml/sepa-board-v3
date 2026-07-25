@@ -445,7 +445,8 @@ def _save_cache(ticker: str, years: int, df: pd.DataFrame) -> None:
     df.to_parquet(_cache_path(ticker, years))
 
 
-def load_deep_history(conn, market: str, years: int, min_bars: int = 260) -> dict[str, pd.DataFrame]:
+def load_deep_history(market: str, years: int, min_bars: int = 260,
+                      stale_delisted_days: int = 15) -> dict[str, pd.DataFrame]:
     """Full-universe history INCLUDING delisted counters (PLAN §9 upgrade A,
     NEXT.md §1's survivorship fix).
 
@@ -453,20 +454,37 @@ def load_deep_history(conn, market: str, years: int, min_bars: int = 260) -> dic
     rolling ~420-session window: every counter that collapsed and delisted
     during the tested period is invisible, and the window is too short to
     test more than one regime. This pulls per-ticker deep history on demand
-    instead:
+    instead — the WHOLE live+delisted directory, deliberately NOT
+    liquidity-filtered before fetching:
 
-      1. liquidity-filter the LIVE universe with the warehouse's cheap 20d
-         value (scan.py's own gate) — pulling full history for ~1,000 names
-         nobody could have traded is not worth ~1,000 API calls.
-      2. include EVERY delisted counter unconditionally. There is no cheap
-         liquidity signal for a name that no longer trades, and pre-filtering
-         them defeats the entire point of this function.
-      3. history() each survivor, cached to parquet keyed on ticker+years so
-         a re-run costs zero further calls.
+    scan.py's own docstring is explicit that "RS is ranked on the FULL
+    universe BEFORE the liquidity filter, because ranking survivors of a
+    pre-filter inflates every rank." A first version of this function
+    liquidity-filtered live tickers down to ~130 API calls before ever
+    computing signals — which shrinks signals()' cross-sectional RS-rank
+    pool from ~972 names to ~230, reproducing exactly that documented
+    anti-pattern on a friendlier subset. That run's expectancy IMPROVED over
+    the biased baseline instead of getting worse, which is backwards: it is
+    the tell that the pool, not the strategy, had changed. Fetching the
+    whole directory costs more calls (~1,100 vs ~130 for KLSE) but a ranking
+    pool that means what the live scan means by it is the entire point of
+    running this backtest at all.
+
+    Delisted counters that turn out to still be trading are excluded and
+    logged: EODHD's KLSE directory flags 90+ live blue-chips (AEON, AXIATA,
+    BAT, Bursa Malaysia itself, verified 2026-07-25) as "delisted" under a
+    stale ALPHABETIC code duplicate of their live numeric listing — the same
+    vendor-alias pattern already known for HEXTAR/HLIND/ICON/KLCC, just at
+    far greater scale. The numeric-code filter in eod.symbols() catches most
+    of these, but any that slip through are caught here mechanically: a
+    "delisted" ticker whose fetched history's last bar is recent cannot be a
+    real delisting, and keeping it would double-count that company under two
+    ticker codes.
+
+    Caching to parquet (keyed on ticker+years) makes a re-run of THIS
+    function free; it does not help across GitHub Actions runs, which start
+    from a clean checkout each time.
     """
-    from . import scan as scanmod
-    from . import warehouse
-
     exchange = eod.EXCHANGES[market]
     directory = eod.symbols(exchange, include_delisted=True)
     live_codes = set(directory.loc[~directory["delisted"], "ticker"])
@@ -479,21 +497,14 @@ def load_deep_history(conn, market: str, years: int, min_bars: int = 260) -> dic
             "fix is a no-op this run. Check eod.symbols(include_delisted=True) "
             "and the KLSE numeric-code filter before trusting these results.", market)
 
-    mcfg = scanmod.MARKETS.get(market)
-    if mcfg is not None:
-        window = warehouse.load_window(conn, market, min_bars=min_bars)
-        liquid_live = set(scanmod.liquidity_filter(window, mcfg))
-    else:
-        liquid_live = live_codes
-        log.warning("deep-history %s: no scan config for this market — "
-                     "skipping the liquidity pre-filter on live tickers", market)
+    targets = sorted(live_codes | delisted_codes)
+    log.info("deep-history %s: %d survivors to fetch (%d live + %d delisted, "
+             "unfiltered by liquidity — full universe feeds RS ranking)",
+             market, len(targets), len(live_codes), len(delisted_codes))
 
-    targets = sorted(liquid_live | delisted_codes)
-    log.info("deep-history %s: %d survivors to fetch (%d liquid live + %d delisted)",
-             market, len(targets), len(liquid_live), len(delisted_codes))
-
+    today = dt.date.today()
     data: dict[str, pd.DataFrame] = {}
-    fetched = cached = failed = 0
+    fetched = cached = failed = mislabeled = 0
     for i, t in enumerate(targets, 1):
         df = _cached_history(t, years)
         if df is None:
@@ -507,14 +518,26 @@ def load_deep_history(conn, market: str, years: int, min_bars: int = 260) -> dic
                 continue
         else:
             cached += 1
+
+        if t in delisted_codes and len(df):
+            last_bar = df.index[-1].date()
+            age = (today - last_bar).days
+            if age <= stale_delisted_days:
+                mislabeled += 1
+                log.warning(
+                    "deep-history %s: %s flagged delisted but last traded %s "
+                    "(%d days ago) — likely a live-company alias duplicate, excluding",
+                    market, t, last_bar, age)
+                continue
+
         if len(df) >= min_bars:
             data[t] = df
-        if i % 25 == 0:
-            log.info("deep-history %s: %d/%d (%d fetched, %d cached, %d failed)",
-                     market, i, len(targets), fetched, cached, failed)
+        if i % 50 == 0:
+            log.info("deep-history %s: %d/%d (%d fetched, %d cached, %d failed, %d mislabeled)",
+                     market, i, len(targets), fetched, cached, failed, mislabeled)
     log.info("deep-history %s complete: %d tickers with >=%d bars "
-             "(%d fetched, %d cached, %d failed)",
-             market, len(data), min_bars, fetched, cached, failed)
+             "(%d fetched, %d cached, %d failed, %d mislabeled-delisted excluded)",
+             market, len(data), min_bars, fetched, cached, failed, mislabeled)
     return data
 
 
@@ -580,7 +603,7 @@ def main() -> int:
         if conn is None:
             conn = dbmod.connect()
         if a.deep_history:
-            data = load_deep_history(conn, a.universe, years=a.years, min_bars=a.min_bars)
+            data = load_deep_history(a.universe, years=a.years, min_bars=a.min_bars)
             log.info("Deep-history backtest: %d %s tickers with >=%d bars (incl. delisted)",
                      len(data), a.universe, a.min_bars)
         else:

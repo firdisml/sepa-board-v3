@@ -23,7 +23,7 @@ on:
         description: "Years of history"
         default: "2"
       deep_history:
-        description: "Survivorship fix: per-ticker history incl. delisted counters (slower, needed for years > ~1)"
+        description: "Survivorship fix: fetches the WHOLE live+delisted directory (~1,100 EODHD calls for KLSE, ~7-10min), no liquidity pre-filter — needed for years > ~1"
         type: boolean
         default: false
       label:
@@ -38,7 +38,9 @@ jobs:
   backtest:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    # 972 tickers x 2y vectorised runs in ~3s; the wall time is warehouse I/O
+    # warehouse-backed runs: 972 tickers x 2y vectorised in ~3s, wall time is
+    # warehouse I/O. --deep-history fetches the whole live+delisted directory
+    # one ticker at a time (~1,100 calls for KLSE) — budget ~10min for that.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
