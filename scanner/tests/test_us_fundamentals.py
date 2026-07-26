@@ -51,6 +51,35 @@ class TestRestatements:
         assert series["2026-03-31"] == 111
 
 
+class TestTagSwitching:
+    """Filers change tags over time. First-match-wins read CF Industries' net
+    income ending 2012 beside revenue ending 2026."""
+
+    def test_chain_is_merged_not_first_match(self):
+        recent = [fact(f"2026-0{i}-30", 100 + i, start=f"2026-0{i-2}-30") for i in (3, 6, 9)]
+        recent += [fact("2025-12-30", 90, start="2025-10-01"),
+                   fact("2025-09-30", 80, start="2025-07-01"),
+                   fact("2025-06-30", 70, start="2025-04-01")]
+        # a legacy tag with plenty of facts, all ancient
+        legacy = [fact(f"2012-0{i}-30", 5, start=f"2012-0{i-2}-30") for i in (3, 6, 9)]
+        legacy += [fact("2011-12-30", 5, start="2011-10-01"),
+                   fact("2011-09-30", 5, start="2011-07-01")]
+        g = {"NetIncomeLoss": {"units": {"USD": legacy}},
+             "ProfitLoss": {"units": {"USD": recent}}}
+        out = uf._flow_series(g, ("NetIncomeLoss", "ProfitLoss"))
+        assert out, "the current tag must be picked up, not just the first listed"
+        assert all(k.startswith("202") for k in out), \
+            "stale periods must be dropped, never graded on"
+
+    def test_higher_priority_tag_wins_the_same_period(self):
+        a = [fact("2026-03-31", 111, start="2026-01-01")]
+        b = [fact("2026-03-31", 222, start="2026-01-01")]
+        g = {"Revenues": {"units": {"USD": a}},
+             "SalesRevenueNet": {"units": {"USD": b}}}
+        out = uf._flow_series(g, ("Revenues", "SalesRevenueNet"))
+        assert out["2026-03-31"] == 111
+
+
 class TestQuarterGrid:
     def test_consecutive_quarters_map_one_to_one(self):
         ends = ["2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30", "2025-03-31"]

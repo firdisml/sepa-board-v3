@@ -87,13 +87,30 @@ def _is_quarter_duration(f: dict) -> bool:
     return 75 <= days <= 100        # a fiscal quarter, however the filer cuts it
 
 
-def _flow_series(gaap: dict, tags: tuple[str, ...]) -> dict[str, float]:
-    """{period_end: value} for quarterly flows, newest FILING winning ties."""
-    for tag in tags:
+def _flow_series(gaap: dict, tags: tuple[str, ...],
+                 max_age_years: int = 4) -> dict[str, float]:
+    """{period_end: value} for quarterly flows.
+
+    MERGES the whole tag chain instead of returning the first tag that happens
+    to have enough facts. Filers CHANGE TAGS over time: CF Industries stopped
+    reporting `NetIncomeLoss` around 2012, so first-match returned net income
+    ending 2012 alongside revenue ending 2026 — the intersection was empty and
+    the counter went ungraded, but had the periods overlapped it would have
+    produced a confident grade computed from FOURTEEN-YEAR-OLD financials.
+    Merging means whichever tag the filer uses TODAY covers recent quarters,
+    while earlier entries in the chain still win any period they both report.
+
+    Also drops anything older than `max_age_years`: five quarters plus a
+    year-ago comparison is all the scorecard needs, and stale data can only
+    mislead.
+    """
+    cutoff = (pd.Timestamp.utcnow().tz_localize(None)
+              - pd.DateOffset(years=max_age_years))
+    best: dict[str, tuple[int, str, float]] = {}   # end -> (tag_rank, filed, val)
+    for rank, tag in enumerate(tags):
         node = gaap.get(tag)
         if not node:
             continue
-        best: dict[str, tuple[str, float]] = {}
         for facts in node.get("units", {}).values():
             for f in facts:
                 if not _is_quarter_duration(f):
@@ -101,13 +118,18 @@ def _flow_series(gaap: dict, tags: tuple[str, ...]) -> dict[str, float]:
                 end, val = f.get("end"), f.get("val")
                 if end is None or val is None:
                     continue
+                try:
+                    if pd.Timestamp(end) < cutoff:
+                        continue
+                except Exception:
+                    continue
                 filed = f.get("filed") or ""
-                # a restated period keeps the value from the LATEST filing
-                if end not in best or filed > best[end][0]:
-                    best[end] = (filed, float(val))
-        if len(best) >= MIN_QUARTERS:
-            return {e: v for e, (_, v) in best.items()}
-    return {}
+                prev = best.get(end)
+                # higher-priority tag wins; within one tag, the LATEST filing
+                # wins so a restatement supersedes the original
+                if prev is None or rank < prev[0] or (rank == prev[0] and filed > prev[1]):
+                    best[end] = (rank, filed, float(val))
+    return {e: v for e, (_, _, v) in best.items()}
 
 
 def _latest_instant(gaap: dict, tags: tuple[str, ...]) -> float | None:
