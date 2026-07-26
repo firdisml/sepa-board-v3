@@ -535,10 +535,20 @@ def _enrich_us(conn, c: dict, us_fund_cache: dict | None = None,
     cached = (us_fund_cache or {}).get(t)
     if cached and cached.get("grade") is not None:
         c["fundamentals"] = {k: v for k, v in cached.items() if k != "_age_days"}
+    elif cached and cached.get("withheld_reason"):
+        # a permanent reason (IFRS filer, not an SEC registrant) will not change
+        # tomorrow — serve it from cache rather than re-pulling 2-4MB nightly
+        c["setup"]["fundamentals_withheld"] = cached["withheld_reason"]
     else:
         fresh = us_fundamentals.for_ticker(t)
-        if fresh:
+        if fresh and fresh.get("grade") is not None:
             c["fundamentals"] = fresh
+            if us_fund_fresh is not None:
+                us_fund_fresh[t] = fresh
+        elif fresh:
+            # keep fundamentals None (the UI's "withheld" state) but tell the
+            # reader WHY, and cache it so the next scan need not refetch
+            c["setup"]["fundamentals_withheld"] = fresh.get("withheld_reason")
             if us_fund_fresh is not None:
                 us_fund_fresh[t] = fresh
     filings = []

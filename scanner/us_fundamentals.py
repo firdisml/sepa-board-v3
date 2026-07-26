@@ -229,6 +229,16 @@ def frame_from_xbrl(gaap: dict) -> pd.DataFrame | None:
     return pd.DataFrame(data, index=cols).T
 
 
+def _withheld(reason: str) -> dict:
+    """A withheld grade with its REASON attached.
+
+    Returning a bare None told the board nothing, so an ungradeable counter and
+    a broken grader looked identical on screen. The caller still treats
+    grade=None as "no grade" — this only carries the explanation alongside.
+    """
+    return {"grade": None, "withheld_reason": reason, "source": "sec-xbrl"}
+
+
 def for_ticker(ticker: str) -> dict | None:
     """Ticker -> the fundamentals dict the rest of the pipeline speaks, graded
     on the SAME scorecard as Bursa.
@@ -238,16 +248,20 @@ def for_ticker(ticker: str) -> dict | None:
     try:
         cik = edgar.cik_of(ticker)
         if cik is None:
-            return None
+            return _withheld("not an SEC registrant — no filings to grade from")
         d = edgar._get(FACTS_URL.format(cik=cik))
         gaap = (d.get("facts") or {}).get("us-gaap") or {}
         if not gaap:
             log.info("XBRL: %s reports no us-gaap facts", ticker)
-            return None
+            return _withheld(
+                "files under IFRS (20-F/40-F), not US GAAP — the XBRL tags this "
+                "grader reads are absent")
 
         out = fundamentals.growth_metrics(frame_from_xbrl(gaap))
         if out is None:
-            return None
+            return _withheld(
+                "fewer than 5 quarters reporting BOTH revenue and net income — "
+                "typically pre-revenue (clinical-stage biotech) or newly listed")
 
         # ROE on a TRAILING-TWELVE-MONTH basis, because `grade` tests O'Neil's
         # ANNUAL 17% bar. The Bursa path multiplies a published quarterly ROE
@@ -281,7 +295,16 @@ def for_ticker(ticker: str) -> dict | None:
                              f"?action=getcompany&CIK={cik}&type=10-Q")
         out["last_announced"] = None
         out["grade"] = fundamentals.grade(out)
+        if out["grade"] is None:
+            # growth_metrics produced numbers but the scorecard could not use
+            # 3 of its 5 boxes. Overwhelmingly a loss-making company: a growth
+            # percentage off a negative base is meaningless, so those boxes
+            # return None by design rather than a fake number.
+            out["withheld_reason"] = (
+                "not enough gradeable measures — growth percentages off a "
+                "negative or zero base are meaningless, so the scorecard "
+                "withholds rather than inventing a number")
         return out
     except Exception as e:
         log.info("US fundamentals build failed for %s: %s", ticker, e)
-        return None
+        return _withheld(f"could not be read from SEC XBRL ({type(e).__name__})")

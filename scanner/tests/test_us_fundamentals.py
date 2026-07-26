@@ -152,8 +152,28 @@ class TestGradeContract:
         assert out["grade"] == "B" and len(calls) == 1
         assert out["source"] == "sec-xbrl"
 
-    def test_bursa_ticker_returns_none(self):
-        assert uf.for_ticker("1155.KL") is None
+    def test_bursa_ticker_is_withheld_with_a_reason(self):
+        # contract CHANGED deliberately: a bare None told the board nothing, so
+        # an ungradeable counter and a broken grader looked identical on screen
+        out = uf.for_ticker("1155.KL")
+        assert out["grade"] is None
+        assert "SEC registrant" in out["withheld_reason"]
+
+    def test_every_withheld_path_explains_itself(self, monkeypatch):
+        # a grade that is absent without a reason is the thing being fixed
+        monkeypatch.setattr(uf.edgar, "_cik_cache", {"ACME": 1})
+        monkeypatch.setattr(uf.edgar, "_get", lambda url: {"facts": {}})   # IFRS filer
+        out = uf.for_ticker("ACME")
+        assert out["grade"] is None and out["withheld_reason"]
+
+    def test_graded_result_carries_no_withheld_reason(self, monkeypatch):
+        from scanner import fundamentals
+        monkeypatch.setattr(fundamentals, "grade", lambda m: "A")
+        monkeypatch.setattr(uf.edgar, "_cik_cache", {"ACME": 1})
+        monkeypatch.setattr(uf.edgar, "_get", lambda url: {"facts": {"us-gaap":
+            TestFrameBuilding()._five_quarters()}})
+        out = uf.for_ticker("ACME")
+        assert out["grade"] == "A" and "withheld_reason" not in out
 
 
 class TestEnrichUsNotClobbered:

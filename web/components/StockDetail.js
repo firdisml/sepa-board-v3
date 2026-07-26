@@ -84,7 +84,7 @@ export default function StockDetail({ c, regime, latestRun, btByMarket, btByStra
   const TABS = [
     hasNotes && "Notes",
     "Trend Template",
-    c.fundamentals && "Fundamentals",
+    (c.fundamentals || setup.fundamentals_withheld) && "Fundamentals",
     hasSponsor && "Sponsorship",
     "Position sizing",
   ].filter(Boolean);
@@ -264,6 +264,23 @@ export default function StockDetail({ c, regime, latestRun, btByMarket, btByStra
             {c.earnings?.high_risk && (
               <div className="warn"><b>Earnings {c.earnings.date}</b>Within a week — a breakout can gap straight through the stop.</div>
             )}
+          </div>
+        )}
+
+        {activeTab === "Fundamentals" && !c.fundamentals && setup.fundamentals_withheld && (
+          <div className="panel">
+            <h3>Quarterly fundamentals <span className="tag neutral">withheld</span></h3>
+            <div className="reasoning">
+              No grade for this counter — <b>{setup.fundamentals_withheld}</b>
+            </div>
+            <div className="sub" style={{ marginTop: 8 }}>
+              Withholding is deliberate. The scorecard grades only the boxes that
+              have real data and returns nothing under three of them, rather than
+              publishing a grade that would look like information it does not
+              have. An ungraded counter is not a bad counter — it is one the
+              mechanical test cannot speak to, so judge it on price, volume and
+              filings instead.
+            </div>
           </div>
         )}
 
