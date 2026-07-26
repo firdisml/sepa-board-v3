@@ -485,6 +485,14 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 .term-bar .chip:hover { transform: none; box-shadow: none; border-color: var(--ink); }
 .term-bar .chip.on { background: var(--pink); color: #121210; border-color: var(--pink); }
+/* Market switch: a segmented control, not three loose chips — MY/US/All are
+   mutually exclusive views of one board, and adjacency is what says so.
+   Only rendered when both markets are actually present (Board.js). */
+.mkt-switch { display: inline-flex; }
+.mkt-switch .chip { border-radius: 0; margin: 0; }
+.mkt-switch .chip:not(:last-child) { border-right: none; }
+.mkt-switch .chip:first-child { border-radius: 5px 0 0 5px; }
+.mkt-switch .chip:last-child { border-radius: 0 5px 5px 0; }
 .term-scroll { flex: 1; overflow-y: auto; padding: 12px; }
 .term-brief { margin-bottom: 12px; }
 .term-empty {

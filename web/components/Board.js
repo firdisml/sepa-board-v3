@@ -17,6 +17,7 @@ const FILTER_KEY = "sepa-screener-filters";
    on is still the only question that matters at 8:30pm. */
 export default function Board({ run, candidates, regime, btByMarket, btByStrategy }) {
   const [q, setQ] = useState("");
+  const [market, setMarket] = useState("ALL");
   const [minRS, setMinRS] = useState(0);
   const [vcpOnly, setVcpOnly] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -32,7 +33,14 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
     antic: c.setup?.anticipation?.score ?? null,
   })), [candidates]);
 
+  // markets actually on tonight's board — the toggle only appears when there
+  // is something to toggle between, so a Bursa-only night looks unchanged
+  const markets = useMemo(
+    () => [...new Set((rows || []).map((r) => r.market).filter(Boolean))].sort(),
+    [rows]);
+
   const visible = rows.filter((r) =>
+    (market === "ALL" || r.market === market) &&
     (r.rs_rank ?? 0) >= minRS &&
     (!vcpOnly || r.isVcp) &&
     (q === "" || r.ticker.toLowerCase().includes(q.toLowerCase()) ||
@@ -53,7 +61,8 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
   useEffect(() => {
     try {
       const s = JSON.parse(sessionStorage.getItem(FILTER_KEY) || "null");
-      if (s) { setMinRS(s.minRS ?? 0); setVcpOnly(!!s.vcpOnly); setQ(s.q ?? ""); }
+      if (s) { setMinRS(s.minRS ?? 0); setVcpOnly(!!s.vcpOnly); setQ(s.q ?? "");
+               setMarket(s.market ?? "ALL"); }
     } catch { /* corrupt storage — keep defaults */ }
     restored.current = true;
     const t = new URLSearchParams(window.location.search).get("t");
@@ -64,9 +73,21 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
   useEffect(() => {
     if (!restored.current) return;
     try {
-      sessionStorage.setItem(FILTER_KEY, JSON.stringify({ minRS, vcpOnly, q }));
+      sessionStorage.setItem(FILTER_KEY, JSON.stringify({ minRS, vcpOnly, q, market }));
     } catch { /* private mode — filters just won't persist */ }
-  }, [minRS, vcpOnly, q]);
+  }, [minRS, vcpOnly, q, market]);
+
+  // Switching market strands the selection in a set the rail no longer shows,
+  // leaving a Bursa counter open while the rail lists only US. Re-land on
+  // something actionable in the market you just switched to. Scoped to
+  // `market` deliberately: nudging RS or search should NOT move your selection.
+  useEffect(() => {
+    if (!restored.current || !selected) return;
+    if (visible.some((r) => r.ticker === selected)) return;
+    setSelected(groups.buy[0]?.ticker || groups.close[0]?.ticker
+                || visible[0]?.ticker || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [market]);
 
   useEffect(() => {
     if (!selected) { setDetail(null); return; }
@@ -90,6 +111,17 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
 
       <div className="term-main">
         <div className="term-bar">
+          {markets.length > 1 && (
+            <span className="mkt-switch">
+              {["ALL", ...markets].map((m) => (
+                <button key={m} className={"chip" + (market === m ? " on" : "")}
+                        onClick={() => setMarket(m)}>
+                  {m === "ALL" ? `All ${rows.length}` :
+                    `${m} ${rows.filter((r) => r.market === m).length}`}
+                </button>
+              ))}
+            </span>
+          )}
           <button className={"chip" + (vcpOnly ? " on" : "")}
                   onClick={() => setVcpOnly(!vcpOnly)}>VCP only</button>
           <span className="rs-slider">
