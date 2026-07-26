@@ -5,7 +5,11 @@ on:
   # must turn this red without touching the mechanical pipeline that produced
   # the board. The board is the product; the commentary is a layer on top.
   workflow_run:
-    workflows: [scan-my]
+    # BOTH scans, not just scan-my. Chained only to Bursa, this ran at 12:38
+    # UTC — before the 22:00 US scan existed — so US candidates never got
+    # covered at all. analyst.py/backtest.py are already market-aware; they
+    # simply were never invoked after a US board landed.
+    workflows: [scan-my, scan-us]
     types: [completed]
   workflow_dispatch: {}
 
