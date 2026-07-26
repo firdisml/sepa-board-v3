@@ -21,7 +21,8 @@ services:
       # scram is the default on 17 but stated explicitly: this port faces the
       # internet, and md5 would be a downgrade nobody would notice.
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-    # NOT published to the host: only PgBouncer may reach Postgres directly.
+    # NOT published to the host: only PgBouncer may reach Postgres directly,
+    # over the internal bridge — which is why TLS is off in postgresql.conf.
     expose: ["5432"]
     volumes:
       - ./data:/var/lib/postgresql/data
@@ -59,6 +60,9 @@ services:
       CLIENT_TLS_SSLMODE: require
       CLIENT_TLS_CERT_FILE: /certs/fullchain.pem
       CLIENT_TLS_KEY_FILE: /certs/privkey.pem
+      # privkey.pem MUST be owned by uid 70 mode 600 on the host: this image
+      # runs as uid 70 (postgres), NOT 1100. Wrong ownership fails with a
+      # bare "failed to load private key file: (null)".
     ports: ["5432:5432"]
     volumes:
       - ./certs:/certs:ro
