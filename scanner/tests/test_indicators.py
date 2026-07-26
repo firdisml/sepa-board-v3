@@ -1059,3 +1059,20 @@ class TestSwingNeverContradictsItsOwnWarnings:
         import inspect
         src = inspect.getsource(scan.build_candidate)
         assert '"demoted_by": setup_demoted' in src
+
+
+class TestGradeGateOnBuyBucket:
+    def test_e_grade_blocks_buy_bucket_but_d_and_withheld_do_not(self):
+        from scanner import scan
+        assert "E" in scan.BLOCK_SWING_GRADES
+        assert "D" not in scan.BLOCK_SWING_GRADES, \
+            "D is weak, not damning — blocking it was not the intent"
+        assert None not in scan.BLOCK_SWING_GRADES, \
+            "'cannot be measured' is not 'measured and bad'; withheld must pass"
+
+    def test_gate_runs_after_fundamentals_are_attached(self):
+        import inspect
+        from scanner import scan
+        src = inspect.getsource(scan.enrich)
+        assert "BLOCK_SWING_GRADES" in src, \
+            "the gate must live in enrich(); build_candidate has no fundamentals yet"

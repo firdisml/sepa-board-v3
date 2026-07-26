@@ -150,7 +150,9 @@ class TestGradeContract:
             TestFrameBuilding()._five_quarters()}})
         out = uf.for_ticker("ACME")
         assert out["grade"] == "B" and len(calls) == 1
-        assert out["source"] == "sec-xbrl"
+        # source now names the taxonomy, so a grade's provenance is auditable
+        # (a US GAAP grade and an IFRS grade are not identically derived)
+        assert out["source"] == "sec-xbrl (us-gaap)"
 
     def test_bursa_ticker_is_withheld_with_a_reason(self):
         # contract CHANGED deliberately: a bare None told the board nothing, so
@@ -162,9 +164,21 @@ class TestGradeContract:
     def test_every_withheld_path_explains_itself(self, monkeypatch):
         # a grade that is absent without a reason is the thing being fixed
         monkeypatch.setattr(uf.edgar, "_cik_cache", {"ACME": 1})
-        monkeypatch.setattr(uf.edgar, "_get", lambda url: {"facts": {}})   # IFRS filer
+        monkeypatch.setattr(uf.edgar, "_get", lambda url: {"facts": {}})
         out = uf.for_ticker("ACME")
         assert out["grade"] is None and out["withheld_reason"]
+
+    def test_ifrs_filer_is_graded_not_rejected(self, monkeypatch):
+        # TD/RY/VIK file 20-F/40-F with NO us-gaap facts at all; the same
+        # scorecard works once the tag names are translated
+        monkeypatch.setattr(uf.edgar, "_cik_cache", {"ACME": 1})
+        q = TestFrameBuilding()._five_quarters()
+        ifrs = {"Revenue": q["Revenues"], "ProfitLoss": q["NetIncomeLoss"]}
+        monkeypatch.setattr(uf.edgar, "_get", lambda url: {"facts": {"ifrs-full": ifrs}})
+        out = uf.for_ticker("ACME")
+        # the point: an IFRS filer is READ, not rejected for lacking us-gaap
+        assert "ifrs-full" in (out.get("source") or ""), "taxonomy must be recorded"
+        assert out.get("rev_yoy_pct") is not None, "IFRS tags must yield real metrics"
 
     def test_graded_result_carries_no_withheld_reason(self, monkeypatch):
         from scanner import fundamentals

@@ -58,6 +58,17 @@ MARKETS = {
 
 CAPS = {"swing": 20, "position": 30, "watchlist": 20, "forming": 15}
 
+# Fundamentals grades barred from the BUY bucket. E is the scorecard's bottom
+# band — under 20% of its gradeable boxes pass — so an E counter is failing
+# essentially every fundamental test that could be measured. Buying a breakout
+# there is the junk-rally case CAN SLIM's C and A legs exist to filter out.
+# D (20-40%) is weak, not damning, and is deliberately ALLOWED. A WITHHELD
+# grade is also allowed: "cannot be measured" is not "measured and bad", and
+# barring it would empty the board of pre-revenue biotech wholesale.
+# Tighten with SCAN_BLOCK_SWING_GRADES=D,E if you want the stricter rule.
+BLOCK_SWING_GRADES = {g.strip().upper() for g in
+                      os.environ.get("SCAN_BLOCK_SWING_GRADES", "E").split(",") if g.strip()}
+
 
 def session_today(calendar_name: str) -> str | None:
     cal = mcal.get_calendar(calendar_name)
@@ -827,6 +838,19 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
                 log.warning("counter_news read failed for %s: %s", t, e)
                 conn.rollback()
                 c["news"] = []
+
+        # Grade gate on the BUY bucket. Applied here, not in build_candidate,
+        # because fundamentals are only attached during enrichment — which
+        # means it runs AFTER the CAPS were applied, so a demotion can push
+        # watchlist one over its cap. Accepted deliberately: the alternative
+        # is dropping the counter from the board entirely (as the high-warning
+        # demotion does under cap pressure), and a counter demoted for weak
+        # fundamentals is exactly the kind you want to still be able to see.
+        _grade = (c.get("fundamentals") or {}).get("grade")
+        if c.get("bucket") == "swing" and _grade in BLOCK_SWING_GRADES:
+            c["bucket"] = "watchlist"
+            prev = c["setup"].get("demoted_by") or []
+            c["setup"]["demoted_by"] = list(prev) + [f"grade_{_grade}"]
 
         entry = c.get("pivot") or c["price"]
         c["targets"] = reasoning.targets(entry, c["stop"]) if c.get("stop") else {}

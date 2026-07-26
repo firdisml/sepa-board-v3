@@ -65,6 +65,24 @@ EQUITY_TAGS = (
     "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
 )
 
+# Foreign private issuers file 20-F/40-F under IFRS and report NO us-gaap facts
+# at all — TD, RY, UBS on this board. Their numbers are in the `ifrs-full`
+# namespace under different names, so the same grading works once the tags are
+# translated. Not every IFRS filer qualifies even so: Scorpio Tankers (STNG)
+# reports no QUARTERLY durations at all, only annual, and five quarters is the
+# scorecard's floor.
+TAXONOMIES = {
+    "us-gaap": {"revenue": REVENUE_TAGS, "income": NET_INCOME_TAGS,
+                "eps": EPS_TAGS, "equity": EQUITY_TAGS},
+    "ifrs-full": {
+        "revenue": ("Revenue", "RevenueFromContractsWithCustomers",
+                    "RevenueFromRenderingOfServices", "RevenueFromSaleOfGoods"),
+        "income": ("ProfitLoss", "ProfitLossAttributableToOwnersOfParent"),
+        "eps": ("DilutedEarningsLossPerShare", "BasicEarningsLossPerShare"),
+        "equity": ("Equity", "EquityAttributableToOwnersOfParent"),
+    },
+}
+
 MIN_QUARTERS = 5
 # SEC labels calendar-aligned durations CY2025Q3; a trailing "I" means INSTANT
 # (a balance-sheet point), which must never be treated as a flow.
@@ -187,16 +205,17 @@ def _quarter_grid(ends: list[str], span: int = 12) -> list[tuple[pd.Timestamp, s
     return out
 
 
-def frame_from_xbrl(gaap: dict) -> pd.DataFrame | None:
+def frame_from_xbrl(gaap: dict, tags: dict | None = None) -> pd.DataFrame | None:
     """XBRL facts -> the line-item frame `growth_metrics` expects.
 
     Same adapter role `fundamentals.frame_from_quarters` plays for Bursa: the
     pipeline speaks ONE fundamentals shape and only this function knows where
     the numbers came from.
     """
-    rev = _flow_series(gaap, REVENUE_TAGS)
-    ni = _flow_series(gaap, NET_INCOME_TAGS)
-    eps = _flow_series(gaap, EPS_TAGS)
+    tags = tags or TAXONOMIES["us-gaap"]
+    rev = _flow_series(gaap, tags["revenue"])
+    ni = _flow_series(gaap, tags["income"])
+    eps = _flow_series(gaap, tags["eps"])
     if len(rev) < MIN_QUARTERS or len(ni) < MIN_QUARTERS:
         return None
 
@@ -250,25 +269,25 @@ def for_ticker(ticker: str) -> dict | None:
         if cik is None:
             return _withheld("not an SEC registrant — no filings to grade from")
         d = edgar._get(FACTS_URL.format(cik=cik))
-        gaap = (d.get("facts") or {}).get("us-gaap") or {}
-        if not gaap:
-            log.info("XBRL: %s reports no us-gaap facts", ticker)
-            return _withheld(
-                "files under IFRS (20-F/40-F), not US GAAP — the XBRL tags this "
-                "grader reads are absent")
+        facts = d.get("facts") or {}
+        ns = "us-gaap" if facts.get("us-gaap") else ("ifrs-full" if facts.get("ifrs-full") else None)
+        if ns is None:
+            return _withheld("reports neither US GAAP nor IFRS XBRL facts")
+        gaap, tags = facts[ns], TAXONOMIES[ns]
 
-        out = fundamentals.growth_metrics(frame_from_xbrl(gaap))
+        out = fundamentals.growth_metrics(frame_from_xbrl(gaap, tags))
         if out is None:
             return _withheld(
                 "fewer than 5 quarters reporting BOTH revenue and net income — "
-                "typically pre-revenue (clinical-stage biotech) or newly listed")
+                "typically pre-revenue (clinical-stage biotech), newly listed, "
+                "or a foreign filer that reports annually rather than quarterly")
 
         # ROE on a TRAILING-TWELVE-MONTH basis, because `grade` tests O'Neil's
         # ANNUAL 17% bar. The Bursa path multiplies a published quarterly ROE
         # by 4; here the four quarters are already in hand, so summing them is
         # strictly more accurate than annualising one.
-        ni = _flow_series(gaap, NET_INCOME_TAGS)
-        equity = _latest_instant(gaap, EQUITY_TAGS)
+        ni = _flow_series(gaap, tags["income"])
+        equity = _latest_instant(gaap, tags["equity"])
         roe = None
         if ni and equity and equity > 0:
             ttm = sum(v for _, v in sorted(ni.items(), reverse=True)[:4])
@@ -290,7 +309,7 @@ def for_ticker(ticker: str) -> dict | None:
         out["roe_basis"] = "TTM net income / latest equity" if roe is not None else None
         out["debt_to_equity"] = None    # needs a liabilities tag chain; not yet
         out["surprise_pct"] = None      # filings carry no consensus estimate
-        out["source"] = "sec-xbrl"
+        out["source"] = f"sec-xbrl ({ns})"
         out["source_url"] = (f"https://www.sec.gov/cgi-bin/browse-edgar"
                              f"?action=getcompany&CIK={cik}&type=10-Q")
         out["last_announced"] = None
