@@ -58,6 +58,22 @@ MARKETS = {
 
 CAPS = {"swing": 20, "position": 30, "watchlist": 20, "forming": 15}
 
+# The BUY WINDOW: how far from the pivot a counter may sit and still be
+# presented as actionable. Deliberately ASYMMETRIC, because the two sides are
+# not the same trade:
+#   BELOW  — anticipation. You place a buy-stop at the pivot; price coming to
+#            you costs nothing, and the stop sits close to the entry.
+#   ABOVE  — chasing. Every percent above the pivot widens the gap to your
+#            stop: entering 5% up with an 8% stop puts risk ~13% below the
+#            pivot, for the same target.
+# O'Neil's documented rule is "within 5% of the pivot, never more" — that is
+# the CEILING, not the recommendation, and he stresses buying as close to it
+# as possible. The default below keeps his 5% for anticipation but tightens
+# the chase side to 2%. Revert with SCAN_BUY_ABOVE_PCT=5 if the board goes
+# too quiet on strong days.
+BUY_BELOW_PCT = float(os.environ.get("SCAN_BUY_BELOW_PCT", 5.0)) / 100
+BUY_ABOVE_PCT = float(os.environ.get("SCAN_BUY_ABOVE_PCT", 2.0)) / 100
+
 # Fundamentals grades barred from the BUY bucket. E is the scorecard's bottom
 # band — under 20% of its gradeable boxes pass — so an E counter is failing
 # essentially every fundamental test that could be measured. Buying a breakout
@@ -232,8 +248,16 @@ def bucket_candidate(df: pd.DataFrame, vcp: dict, ext: dict) -> str:
     # baseline = the PRIOR 50 days: today's own surge must not inflate the
     # average it's being measured against (a true 2x day read as ~1.96x)
     vol50 = float(df["Volume"].iloc[-51:-1].mean()) if len(df) >= 51 else 0.0
-    breakout_today = pivot and price >= pivot and vol50 > 0 and vol_today > 1.4 * vol50
-    near_pivot = pivot and abs(price / pivot - 1) <= 0.05
+    # A breakout only counts while price is still INSIDE the buy window. A
+    # counter that gapped 9% through its pivot on huge volume is a real
+    # breakout and a bad entry — `extended` caught the worst of it at >5%, but
+    # anything between the window and that line was reaching the board as
+    # "buy" at a price no rule would actually pay.
+    from_pivot = (price / pivot - 1) if pivot else None
+    in_window = from_pivot is not None and -BUY_BELOW_PCT <= from_pivot <= BUY_ABOVE_PCT
+    breakout_today = (in_window and from_pivot >= 0
+                      and vol50 > 0 and vol_today > 1.4 * vol50)
+    near_pivot = in_window
     if vcp.get("vcp"):
         if (breakout_today or near_pivot) and not ext["extended"]:
             return "swing"

@@ -1076,3 +1076,52 @@ class TestGradeGateOnBuyBucket:
         src = inspect.getsource(scan.enrich)
         assert "BLOCK_SWING_GRADES" in src, \
             "the gate must live in enrich(); build_candidate has no fundamentals yet"
+
+
+class TestAsymmetricBuyWindow:
+    """Below the pivot is anticipation (buy-stop, price comes to you); above it
+    is chasing (every percent widens the gap to your stop). The window is
+    deliberately not symmetric."""
+
+    def test_default_window_is_wider_below_than_above(self):
+        from scanner import scan
+        assert scan.BUY_BELOW_PCT > scan.BUY_ABOVE_PCT
+
+    def test_oneill_ceiling_is_reachable_by_config(self):
+        # O'Neil's documented rule is "within 5% of the pivot, never more" —
+        # reverting to it must not need a code change
+        import importlib, os
+        from scanner import scan
+        os.environ["SCAN_BUY_ABOVE_PCT"] = "5"
+        try:
+            importlib.reload(scan)
+            assert abs(scan.BUY_ABOVE_PCT - 0.05) < 1e-9
+        finally:
+            del os.environ["SCAN_BUY_ABOVE_PCT"]
+            importlib.reload(scan)
+
+    def test_breakout_beyond_the_window_is_not_a_buy(self):
+        # a counter that gapped through its pivot on huge volume is a real
+        # breakout AND a bad entry; it must not reach the buy bucket
+        import numpy as np, pandas as pd
+        from scanner import indicators, scan
+        idx = pd.bdate_range("2024-01-02", periods=400)
+        n = len(idx)
+        c = np.empty(n); v = np.full(n, 1_000_000.0)
+        c[0] = 50.0
+        for i in range(1, n):
+            if i < n - 8:
+                c[i] = c[i - 1] * 1.003
+            elif i < n - 1:
+                c[i] = c[i - 1] * (1.0005 if i % 2 else 0.9995)
+            else:
+                c[i] = c[i - 1] * 1.09        # gap 9% through the pivot
+                v[i] = 5_000_000.0
+        df = pd.DataFrame({"Open": c * 0.999, "High": c * 1.004, "Low": c * 0.996,
+                           "Close": c, "Volume": v}, index=idx)
+        vcp = indicators.detect_vcp(df)
+        if not (vcp.get("vcp") and vcp.get("pivot")):
+            pytest.skip("fixture produced no VCP pivot")
+        ext = indicators.extension_flags(df, vcp["pivot"])
+        b = scan.bucket_candidate(df, vcp, ext)
+        assert b != "swing", "a 9% gap past the pivot is not a buy point"
