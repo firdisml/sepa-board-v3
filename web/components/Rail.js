@@ -47,6 +47,16 @@ function RailRow({ r, selected, onSelect }) {
         {r.setup?.ma20_bounce && <i className="tag good">20</i>}
         {r.setup?.ma50_bounce && <i className="tag good">50</i>}
         {r.vcp?.vcp && <i className="tag good">VCP</i>}
+        {/* fundamentals grade, same colour mapping StockDetail uses. Absent
+            when withheld — a counter that could not be graded shows no tag
+            rather than a neutral one that would read as "graded, mediocre". */}
+        {r.fundamentals?.grade && (
+          <i className={"tag " + ({ A: "good", B: "good", C: "neutral",
+                                    D: "bad", E: "bad" }[r.fundamentals.grade] || "neutral")}
+             title={`Fundamentals grade ${r.fundamentals.grade}`}>
+            {r.fundamentals.grade}
+          </i>
+        )}
         {r.extended && <i className="tag bad">EXT</i>}
       </span>
     </button>

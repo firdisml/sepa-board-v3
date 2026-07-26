@@ -20,6 +20,7 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
   const [market, setMarket] = useState("ALL");
   const [minRS, setMinRS] = useState(0);
   const [vcpOnly, setVcpOnly] = useState(false);
+  const [gradeA, setGradeA] = useState(false);
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -43,6 +44,11 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
     (market === "ALL" || r.market === market) &&
     (r.rs_rank ?? 0) >= minRS &&
     (!vcpOnly || r.isVcp) &&
+    // Grade A only. Note this also hides every WITHHELD grade — correct, since
+    // "show me A-graded names" cannot include ones that were never gradeable
+    // (pre-revenue biotech, IFRS foreign filers), but it does mean the filter
+    // is stricter than it looks on a biotech-heavy US board.
+    (!gradeA || r.fundamentals?.grade === "A") &&
     (q === "" || r.ticker.toLowerCase().includes(q.toLowerCase()) ||
       (r.name || "").toLowerCase().includes(q.toLowerCase())));
 
@@ -62,7 +68,7 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
     try {
       const s = JSON.parse(sessionStorage.getItem(FILTER_KEY) || "null");
       if (s) { setMinRS(s.minRS ?? 0); setVcpOnly(!!s.vcpOnly); setQ(s.q ?? "");
-               setMarket(s.market ?? "ALL"); }
+               setMarket(s.market ?? "ALL"); setGradeA(!!s.gradeA); }
     } catch { /* corrupt storage — keep defaults */ }
     restored.current = true;
     const t = new URLSearchParams(window.location.search).get("t");
@@ -73,9 +79,9 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
   useEffect(() => {
     if (!restored.current) return;
     try {
-      sessionStorage.setItem(FILTER_KEY, JSON.stringify({ minRS, vcpOnly, q, market }));
+      sessionStorage.setItem(FILTER_KEY, JSON.stringify({ minRS, vcpOnly, q, market, gradeA }));
     } catch { /* private mode — filters just won't persist */ }
-  }, [minRS, vcpOnly, q, market]);
+  }, [minRS, vcpOnly, q, market, gradeA]);
 
   // Switching market strands the selection in a set the rail no longer shows,
   // leaving a Bursa counter open while the rail lists only US. Re-land on
@@ -124,6 +130,11 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
           )}
           <button className={"chip" + (vcpOnly ? " on" : "")}
                   onClick={() => setVcpOnly(!vcpOnly)}>VCP only</button>
+          <button className={"chip" + (gradeA ? " on" : "")}
+                  onClick={() => setGradeA(!gradeA)}
+                  title="Fundamentals grade A only — hides withheld grades too">
+            Grade A {rows.filter((r) => r.fundamentals?.grade === "A").length}
+          </button>
           <span className="rs-slider">
             RS ≥ <input type="range" min="0" max="99" value={minRS}
                         onChange={(e) => setMinRS(+e.target.value)} />
