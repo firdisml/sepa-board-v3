@@ -10,3 +10,9 @@ node_modules/
 web/node_modules
 web/.next
 web/.env.local
+
+# self-hosted DB deploy secrets (deploy/README.md explains what belongs here)
+deploy/.env
+deploy/certs/
+deploy/data/
+deploy/backups/

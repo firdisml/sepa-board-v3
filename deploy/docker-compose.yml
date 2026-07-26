@@ -1,0 +1,64 @@
+# Self-hosted Postgres for sepa-board-v3.
+#
+# PLAIN POSTGRES, NOT SELF-HOSTED SUPABASE — deliberate. The app uses no
+# Supabase feature: `postgres` (postgres.js) in web/ and psycopg in scanner/
+# both speak raw SQL, and the only extensions in the source DB (pgcrypto,
+# uuid-ossp, pg_stat_statements, plpgsql) ship with stock Postgres. Running
+# Supabase's ~10 services to serve that would add RAM, patching and CVE
+# surface for nothing.
+#
+# PgBouncer is NOT optional here. Vercel serverless opens a new connection per
+# invocation; Supabase's session pooler absorbed that, stock Postgres would
+# start refusing at max_connections under burst and the failures look random.
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sepa
+      POSTGRES_USER: sepa
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in deploy/.env}
+      # scram is the default on 17 but stated explicitly: this port faces the
+      # internet, and md5 would be a downgrade nobody would notice.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    # NOT published to the host: only PgBouncer may reach Postgres directly.
+    expose: ["5432"]
+    volumes:
+      - ./data:/var/lib/postgresql/data
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./certs:/certs:ro
+    command: >
+      postgres -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sepa -d sepa"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: sepa
+      DB_PASSWORD: ${PG_PASSWORD}
+      DB_NAME: sepa
+      # TRANSACTION mode: a Vercel function holds a connection for one query,
+      # so session-mode pinning would waste the pool. Note the tradeoff —
+      # session-level state (SET, advisory locks, prepared statements) does not
+      # survive; the app already sets `prepare: false` in web/lib/db.js, which
+      # is exactly what transaction pooling requires.
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "200"
+      DEFAULT_POOL_SIZE: "20"
+      AUTH_TYPE: scram-sha-256
+      # TLS terminates here — this is the only internet-facing port.
+      CLIENT_TLS_SSLMODE: require
+      CLIENT_TLS_CERT_FILE: /certs/fullchain.pem
+      CLIENT_TLS_KEY_FILE: /certs/privkey.pem
+    ports: ["5432:5432"]
+    volumes:
+      - ./certs:/certs:ro
