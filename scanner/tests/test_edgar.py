@@ -100,3 +100,52 @@ class TestFilings:
         # an empty list would read as "this company never files"
         with pytest.raises(edgar.EdgarUnavailable):
             edgar.filings("1155.KL")
+
+
+class TestMultiMarketSaveRunScoping:
+    """scan-my (12:30 UTC) and scan-us (22:00 UTC) share one run_date, so a
+    single-market save must not touch the other market's rows. Pure SQL-shape
+    test against a stub cursor — the real behaviour was verified live."""
+
+    class _Cur:
+        def __init__(self): self.sql = []
+        def execute(self, q, p=None): self.sql.append((" ".join(q.split()), p))
+        def fetchone(self): return (1,)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Conn:
+        def __init__(self, cur): self._c = cur
+        def cursor(self): return self._c
+        def commit(self): pass
+
+    def _run(self, candidates, sectors=()):
+        from scanner import db
+        cur = self._Cur()
+        db.save_run(self._Conn(cur), "2099-01-01", {"MY": {}}, list(candidates), list(sectors))
+        return cur.sql
+
+    def _cand(self, t, m):
+        return {"ticker": t, "market": m, "price": 1.0, "rs_rank": 1, "bucket": "swing",
+                "checks": {}, "vcp": {}, "setup": {}, "patterns": {}, "levels": {},
+                "candles": [], "targets": {}, "quality": 1}
+
+    def test_candidate_delete_is_market_scoped(self):
+        sql = self._run([self._cand("AAPL", "US")])
+        dels = [(q, p) for q, p in sql if q.startswith("DELETE FROM candidates")]
+        assert dels, "expected a candidates delete"
+        q, p = dels[0]
+        assert "market = ANY" in q, "a US scan must not delete Bursa candidates"
+        assert p[1] == ["US"]
+
+    def test_regime_is_merged_not_replaced(self):
+        sql = self._run([self._cand("AAPL", "US")])
+        ins = [q for q, _ in sql if "INSERT INTO scan_runs" in q][0]
+        # replacing would drop the other market's regime block entirely
+        assert "scan_runs.regime" in ins and "||" in ins
+
+    def test_sector_ranks_untouched_when_no_sector_rows(self):
+        # sector_ranks has NO market column, so a US run (no sector rows) must
+        # not issue the unscoped delete that would wipe Bursa's rotation
+        sql = self._run([self._cand("AAPL", "US")], sectors=[])
+        assert not [q for q, _ in sql if q.startswith("DELETE FROM sector_ranks")]

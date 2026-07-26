@@ -22,18 +22,37 @@ def connect():
 
 def save_run(conn, run_date: str, regime: dict, candidates: list[dict], sectors: list[dict],
              sector_news: list[dict] | None = None) -> int:
+    """Persist one scan. SCOPED BY MARKET, because the two markets scan hours
+    apart onto the SAME run_date.
+
+    scan-my lands 12:30 UTC and scan-us 22:00 UTC, so both hit one scan_runs
+    row (run_date is unique). Before this was scoped, the later US run wiped
+    every Bursa candidate — the board published at 8:30pm MYT simply vanished a
+    few hours later — and `regime = EXCLUDED.regime` replaced MY's regime block
+    with a dict containing only US. Invisible while v3.0 was Bursa-only.
+    """
+    markets = sorted({c.get("market") for c in candidates if c.get("market")})
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO scan_runs (run_date, regime, status, sector_news)
                VALUES (%s, %s, 'complete', %s)
-               ON CONFLICT (run_date) DO UPDATE SET regime = EXCLUDED.regime,
-                   status = 'complete', sector_news = EXCLUDED.sector_news, created_at = now()
+               ON CONFLICT (run_date) DO UPDATE SET
+                   -- MERGE, never replace: `regime` is keyed by market, so a
+                   -- single-market scan must leave the other market's block intact
+                   regime = COALESCE(scan_runs.regime, '{}'::jsonb) || EXCLUDED.regime,
+                   status = 'complete',
+                   sector_news = EXCLUDED.sector_news, created_at = now()
                RETURNING id""",
             (run_date, json.dumps(regime), json.dumps(sector_news or [])),
         )
         run_id = cur.fetchone()[0]
 
-        cur.execute("DELETE FROM candidates WHERE run_id = %s", (run_id,))
+        # only this run's OWN markets — never the other market's rows
+        if markets:
+            cur.execute("DELETE FROM candidates WHERE run_id = %s AND market = ANY(%s)",
+                        (run_id, markets))
+        else:
+            cur.execute("DELETE FROM candidates WHERE run_id = %s", (run_id,))
         for c in candidates:
             tgt = c.get("targets") or {}
             cur.execute(
@@ -59,7 +78,14 @@ def save_run(conn, run_date: str, regime: dict, candidates: list[dict], sectors:
                  json.dumps(c.get("fundamentals"))),
             )
 
-        cur.execute("DELETE FROM sector_ranks WHERE run_id = %s", (run_id,))
+        # NOT market-scoped, unlike candidates: sector_ranks has no market
+        # column. Bursa is the only market that produces sector rows today
+        # (sectors.py reads US sector ETFs, which the MY path does not use), so
+        # a US run passes an empty list here and deletes nothing. If US ever
+        # emits sector rows, this table needs a market column first — scoping
+        # it without one silently wipes Bursa's rotation every US scan.
+        if sectors:
+            cur.execute("DELETE FROM sector_ranks WHERE run_id = %s", (run_id,))
         for s in sectors:
             cur.execute(
                 """INSERT INTO sector_ranks
