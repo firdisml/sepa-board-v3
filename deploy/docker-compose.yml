@@ -56,6 +56,10 @@ services:
       MAX_CLIENT_CONN: "200"
       DEFAULT_POOL_SIZE: "20"
       AUTH_TYPE: scram-sha-256
+      # Without this, psycopg's `options=-c statement_timeout=...` is a FATAL
+      # "unsupported startup parameter" in transaction mode. Safe to ignore
+      # only because postgresql.conf now enforces the same timeout server-side.
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,statement_timeout
       # TLS terminates here — this is the only internet-facing port.
       CLIENT_TLS_SSLMODE: require
       CLIENT_TLS_CERT_FILE: /certs/fullchain.pem
