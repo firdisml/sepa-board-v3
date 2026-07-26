@@ -1,0 +1,20 @@
+name: probe-news
+on: { workflow_dispatch: {} }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe EODHD news endpoint
+        env:
+          EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
+        run: |
+          echo "=== per-ticker news (AAPL.US, limit 2) ==="
+          curl -s "https://eodhd.com/api/news?s=AAPL.US&limit=2&api_token=$EODHD_API_TOKEN&fmt=json" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print('count',len(d)); print(json.dumps(d[0],indent=1)[:1200] if d else 'EMPTY')"
+          echo "=== bursa ticker (1155.KLSE, limit 2) ==="
+          curl -s "https://eodhd.com/api/news?s=1155.KLSE&limit=2&api_token=$EODHD_API_TOKEN&fmt=json" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print('count',len(d)); print(json.dumps(d[0],indent=1)[:800] if d else 'EMPTY')"
+          echo "=== date-filtered + offset ==="
+          curl -s "https://eodhd.com/api/news?s=NVDA.US&from=2026-07-01&to=2026-07-25&limit=3&offset=0&api_token=$EODHD_API_TOKEN&fmt=json" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print('count',len(d)); [print(x.get('date'),'|',x.get('title','')[:70]) for x in d]"
