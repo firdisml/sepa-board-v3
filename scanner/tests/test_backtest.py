@@ -493,3 +493,55 @@ class TestKlseAliasFilterWarnsOnDelisted:
 
         assert list(out["ticker"]) == []                 # both non-numeric, both dropped
         assert any("DELISTED symbols dropped" in r.message for r in caplog.records)
+
+
+class TestGhostTradingDays:
+    """A handful of junk tickers carry vendor bars on MARKET HOLIDAYS. Every
+    real ticker is NaN on those rows, and one NaN nulls any rolling window
+    spanning it — so ma200 was NaN for all 5,594 US tickers and the nightly US
+    backtest reported ZERO trades, silently, for as long as US ran."""
+
+    HOLIDAY_POS = [120, 250]     # positions treated as market holidays
+
+    def _universe(self, n=30, with_ghosts=True):
+        """Real tickers skip the holidays; one junk ticker trades on them —
+        exactly the vendor behaviour observed on the live US warehouse."""
+        full = pd.bdate_range("2024-01-02", periods=400)
+        real_idx = full.delete(self.HOLIDAY_POS)
+        data = {}
+        for i in range(n):
+            df = make_df(n=len(real_idx), trend=0.003, seed=i)
+            df.index = real_idx
+            data[f"T{i}"] = df
+        junk = make_df(n=len(full) if with_ghosts else len(real_idx),
+                       trend=0.0, seed=99)
+        junk.index = full if with_ghosts else real_idx
+        data["JUNK"] = junk
+        return data
+
+    def _ghost_dates(self):
+        return pd.bdate_range("2024-01-02", periods=400)[self.HOLIDAY_POS]
+
+    def test_holiday_rows_are_excluded_from_the_session_index(self):
+        from scanner.backtest import _drop_ghost_days, _matrix
+        C = _matrix(self._universe(), "Close")
+        real = _drop_ghost_days(C)
+        for g in self._ghost_dates():
+            assert g in C.index, "fixture must contain the ghost row"
+            assert g not in real, "a day only one junk ticker traded is not a session"
+
+    def test_signals_survive_a_ghost_day(self):
+        # the actual regression: with ghost rows present ma200 is NaN for
+        # EVERY ticker, so the strategy can never fire
+        clean = signals(self._universe(with_ghosts=False), "breakout")
+        poisoned = signals(self._universe(with_ghosts=True), "breakout")
+        assert clean.values.sum() > 0, "control: clean universe must produce signals"
+        assert poisoned.values.sum() > 0, \
+            "ghost holiday rows must not null every rolling window"
+
+    def test_ma50_exit_matrix_also_filtered(self):
+        # the 50MA EXIT reads its own matrix; leaving it unfiltered breaks
+        # exits the same way entries broke
+        from scanner.backtest import _ma50_matrix
+        m = _ma50_matrix(self._universe())
+        assert m.notna().any().any(), "50MA exit must not be all-NaN"

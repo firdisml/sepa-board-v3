@@ -102,9 +102,27 @@ def _by_market(data: dict[str, pd.DataFrame]) -> dict[str, dict[str, pd.DataFram
     return out
 
 
+def _drop_ghost_days(C: pd.DataFrame, min_coverage: float = 0.2) -> pd.Index:
+    """Index of REAL sessions: days where a meaningful fraction of the market
+    actually traded.
+
+    The union index otherwise picks up phantom rows: a few dozen junk US
+    tickers carry vendor-garbage bars ON MARKET HOLIDAYS (Thanksgiving,
+    Christmas, July 4th — 19 such days in one 434-day window, each with <2%
+    coverage). Every real ticker is NaN on those rows, and one NaN nulls any
+    rolling window that spans it — so ma200 was NaN for ALL 5,594 US tickers
+    and the nightly US backtest reported zero trades forever. The same
+    poisoning broke the 50MA exit. A real session has >50% coverage; 20% is a
+    conservative floor that also behaves in tiny test universes.
+    """
+    return C.index[C.notna().mean(axis=1) >= min_coverage]
+
+
 def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout") -> pd.DataFrame:
     """Entry signals for tickers sharing ONE trading calendar."""
     C, H, L, V, O = (_matrix(data, f) for f in ("Close", "High", "Low", "Volume", "Open"))
+    real = _drop_ghost_days(C)
+    C, H, L, V, O = (M.loc[real] for M in (C, H, L, V, O))
 
     ma50 = C.rolling(50).mean()
     ma150 = C.rolling(150).mean()
@@ -225,11 +243,13 @@ def signals(data: dict[str, pd.DataFrame], strategy: str = "breakout") -> pd.Dat
 
 
 def _ma50_matrix(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """50MA per ticker on its OWN calendar (same NaN-poisoning issue)."""
-    parts = [
-        _matrix(sub, "Close").rolling(50).mean()
-        for sub in _by_market(data).values()
-    ]
+    """50MA per ticker on its OWN calendar (same NaN-poisoning issue) —
+    including the ghost-day filter, or the 50MA EXIT breaks the same way the
+    entries did."""
+    parts = []
+    for sub in _by_market(data).values():
+        C = _matrix(sub, "Close")
+        parts.append(C.loc[_drop_ghost_days(C)].rolling(50).mean())
     return pd.concat(parts, axis=1).sort_index()
 
 
