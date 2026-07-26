@@ -1,42 +1,12 @@
-name: probe-news
-on: { workflow_dispatch: {} }
+name: probe-news2
+on:
+  workflow_dispatch:
 jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe relevance + fields
-        env:
+      - uses: actions/checkout@v4
+      - env:
           EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
-        run: |
-          echo "=== ALL FIELDS on one item ==="
-          curl -s "https://eodhd.com/api/news?s=NVDA.US&limit=1&api_token=$EODHD_API_TOKEN&fmt=json" \
-            | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-print('keys:', list(d[0].keys()))
-print('symbols:', d[0].get('symbols'))
-print('tags:', d[0].get('tags'))
-print('sentiment:', d[0].get('sentiment'))
-print('content len:', len(d[0].get('content','')))"
-          echo ""
-          echo "=== RELEVANCE: do AAPL.US articles actually mention Apple in the TITLE? ==="
-          curl -s "https://eodhd.com/api/news?s=AAPL.US&limit=20&api_token=$EODHD_API_TOKEN&fmt=json" \
-            | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-hit=sum(1 for x in d if any(k in x.get('title','').lower() for k in ['apple','aapl','iphone','tim cook']))
-print(f'{hit}/{len(d)} titles mention Apple')
-for x in d[:8]:
-    n=len(x.get('symbols') or [])
-    print(f\"  [{n:>3} syms] {x.get('title','')[:68]}\")"
-          echo ""
-          echo "=== same for a MID-CAP (less boilerplate spam?) ==="
-          curl -s "https://eodhd.com/api/news?s=ELF.US&limit=15&api_token=$EODHD_API_TOKEN&fmt=json" \
-            | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-print('count',len(d))
-for x in d[:6]:
-    n=len(x.get('symbols') or [])
-    print(f\"  [{n:>3} syms] {x.get('title','')[:68]}\")"
+        run: python3 tools/probe_news.py
