@@ -760,6 +760,19 @@ def main() -> int:
             warehouse.coverage_check(conn, market, report["bar_date"])
             if not force:
                 warehouse.assert_fresh(conn, market, dt.date.fromisoformat(run_date))
+            # Maintenance was designed (§3.3) but never wired in: the US bulk
+            # carries ~47k rows a night, ~30k of them OTC/pink symbols the
+            # directory deliberately excludes — without the purge they
+            # accumulate forever and the free-tier DB blows in weeks. The
+            # prune drops bars past the rolling window for the same reason.
+            # Failures here must not kill the scan — the board matters more
+            # than tidiness tonight.
+            try:
+                warehouse.purge_unlisted(conn, market)
+                warehouse.prune(conn)
+            except Exception as e:
+                log.warning("[%s] warehouse maintenance failed (scan continues): %s",
+                            market, e)
         except Exception as e:
             log.error("[%s] aborting: %s", market, e)
             conn.close()
