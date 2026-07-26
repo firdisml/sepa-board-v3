@@ -50,7 +50,15 @@ NOTES_MODELS = [m for m in (os.environ.get("ANALYST_NOTES_MODEL"),
 BRIEF_MODELS = [m for m in (os.environ.get("ANALYST_BRIEF_MODEL"),
                             "gemini-3.5-flash", "gemini-3-flash-preview",
                             "gemini-3.1-flash-lite") if m]
-MAX_NOTES = int(os.environ.get("ANALYST_MAX_NOTES", 90))  # >= sum of bucket caps
+# Per-MARKET note budget: >= the sum of scan.CAPS (85). The cap used to be a
+# flat 90, which was exactly one market's worth — with Bursa and US both live
+# the board is ~109 candidates, the run stopped at 90, and because `eligible`
+# is sorted by bucket then QUALITY (market-blind), the shortfall landed
+# entirely on US every night, whose quality scores run lower. Scaling by the
+# markets actually present keeps that from silently starving one of them.
+# ANALYST_MAX_NOTES still overrides absolutely, for cost control.
+MAX_NOTES_PER_MARKET = 90
+_MAX_NOTES_ENV = os.environ.get("ANALYST_MAX_NOTES")
 # grounded prompts per night — every pick gets live search; ~85/night x 22
 # sessions stays inside the 5,000/month free tier with headroom
 SEARCH_MAX = int(os.environ.get("ANALYST_SEARCH_MAX", 100))
@@ -481,10 +489,16 @@ def main() -> int:
     # ---- per-pick trade plans: EVERY board ticker (cheap enough on Flash) —
     # actionable buckets first so the cap can only ever trim forming picks
     _bucket_rank = {"swing": 0, "watchlist": 1, "position": 2, "forming": 3}
+    markets_present = {c.get("market") for c in cands if c.get("market")} or {"MY"}
+    max_notes = (int(_MAX_NOTES_ENV) if _MAX_NOTES_ENV
+                 else MAX_NOTES_PER_MARKET * len(markets_present))
     eligible = sorted(
         cands,
         key=lambda c: (_bucket_rank.get(c["bucket"], 9), -(c["quality"] or 0)),
-    )[:MAX_NOTES]
+    )[:max_notes]
+    if len(cands) > max_notes:
+        log.info("note budget %d < %d candidates — %d will go uncovered",
+                 max_notes, len(cands), len(cands) - max_notes)
     new_all = ({c["ticker"] for c in cands} - prev_tickers) if prev_id else set()
     notes_done = searches_spent = 0
     news_by_ticker: dict[str, list] = {}  # collected here, reused by the briefs
@@ -544,7 +558,8 @@ def main() -> int:
                     news_by_ticker[c["ticker"]] = note["news"][:3]
         except Exception as e:  # one bad ticker must not kill the run
             log.warning("note failed for %s: %s", c["ticker"], e)
-    log.info("AI notes: %d/%d written", notes_done, len(eligible))
+    log.info("AI notes: %d/%d written (budget %d across %s)",
+             notes_done, len(eligible), max_notes, sorted(markets_present))
 
     # ---- morning brief per market ----
     brief: dict = {}
