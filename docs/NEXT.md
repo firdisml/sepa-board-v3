@@ -69,10 +69,27 @@ Two known gotchas:
 - **Cache to parquet** keyed on `ticker+years`, or every re-run costs another
   ~130 API calls. `.gitignore` already covers `*.parquet`.
 
-**Expect the numbers to get WORSE. That is the point.** If ma20_bounce's
-+0.53R expectancy survives delisted inclusion and a downtrend, it can be
-believed. Current results to beat (PLAN §12.1): ma20_bounce +0.53R,
-breakout +0.25R, ma50_bounce -0.19R, episodic_pivot -0.38R.
+**Expect the numbers to get WORSE. That is the point.** — CONFIRMED
+2026-07-27. Every tactic re-measured on the fair basis (5y, full universe,
+delisted included). The ranking did not survive:
+
+| tactic          | exp   |   n | win% |   PF | CAGR%  | maxDD%  |
+|-----------------|-------|-----|------|------|--------|---------|
+| breakout        | +0.33 | 223 | 32.3 | 1.56 | +10.26 | -35.43  |
+| buyable_gap_up  | +0.30 | 130 | 32.3 | 1.52 |  +6.02 | **-17.79** |
+| ma20_bounce     | +0.20 | 225 | 31.1 | 1.40 |  +5.91 | -34.40  |
+| pocket_pivot    | +0.08 | 321 | 24.9 | 1.16 |  -0.23 | -45.13  |
+| ma50_bounce     | -0.01 | 432 | 22.0 | 0.98 |  -6.27 | -52.45  |
+| episodic_pivot  | -0.38 | 723 | 17.7 | 0.48 | -48.20 | **-96.25** |
+
+**ma20_bounce was never the best tactic.** Its apparent +0.53R was an artifact
+of a 13-month survivorship-biased window inside one green regime — exactly the
+shape a 20MA-bounce flatters itself in. On the fair basis it is THIRD at
++0.20R, and breakout leads at +0.33R.
+
+buyable_gap_up is the risk-adjusted standout: within 0.03R of breakout for
+HALF the drawdown (-17.8% vs -35.4%). episodic_pivot's -96% drawdown removes
+any remaining doubt about its hazard status.
 
 ---
 

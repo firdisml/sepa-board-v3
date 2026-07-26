@@ -9,9 +9,15 @@
       receipts say what it is earning now, on signals actually published. A
       large gap either way is the thing worth investigating. */
 
-// measured on the full Bursa universe, 2y — PLAN §12.1
+// Measured on the FAIR basis: 5 years, full Bursa universe, delisted counters
+// included, RS ranked across all ~1,062 names (deep-history runs 2026-07-27).
+// These REPLACE the earlier 2y figures, which came from a survivorship-biased
+// ~13-month window that sat entirely inside one green regime. Every ranking
+// below moved; ma20_bounce fell from an apparent +0.53R to +0.20R and lost
+// first place to breakout.
 const BACKTEST = {
-  ma20_bounce: 0.53, breakout: 0.25, ma50_bounce: -0.19, episodic_pivot: -0.38,
+  breakout: 0.33, buyable_gap_up: 0.30, ma20_bounce: 0.20,
+  pocket_pivot: 0.08, ma50_bounce: -0.01, episodic_pivot: -0.38,
 };
 
 const LABEL = {
@@ -69,8 +75,9 @@ export default function StrategyBoard({ rows }) {
       <h3>Strategy scoreboard — which tactic is paying</h3>
       <div className="reasoning" style={{ marginBottom: 10 }}>
         Ranked by expectancy on <b>closed</b> signals only. Backtest is the
-        full-universe 2-year result; live is what these rules have actually
-        earned on published signals. A gap between them is the thing to look at
+        5-year full-universe result <i>including delisted counters</i>; live is
+        what these rules have actually earned on published signals. A gap
+        between them is the thing to look at
         {totalClosed < 20 && (
           <> — and with <b>{totalClosed} closed signals</b> so far, treat every
           row here as provisional. Twenty is the point these numbers start

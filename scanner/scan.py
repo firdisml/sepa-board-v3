@@ -308,9 +308,12 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
     # was always suggested_stop() (max 10-day low, entry-8%), which is the
     # BREAKOUT's stop, shown even when the live setup is an MA bounce with a
     # tighter, differently-derived stop of its own. That matters now that
-    # ma20_bounce is the measured best tactic (+0.53R vs breakout's +0.25R,
-    # PLAN §12.1): taking one while reading the breakout stop means risking
-    # more than the trade is designed to.
+    # Taking a bounce while reading the breakout stop means risking more than
+    # the trade is designed to. (This block once cited ma20_bounce as "the
+    # measured best tactic, +0.53R vs breakout +0.25R" — that came from a
+    # survivorship-biased 13-month window. On the fair 5y basis ma20_bounce is
+    # +0.20R and breakout is +0.33R, so the ORDER below is justified by which
+    # entry is actionable today, NOT by which tactic pays better.)
     #
     # Priority mirrors what a trader would actually take TODAY: a live bounce
     # at a rising MA beats a pivot that price has not reached yet.
