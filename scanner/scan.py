@@ -753,7 +753,10 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
                     db.save_counter_news(conn, t, "announcement", anns30)
             except Exception as e:
                 log.info("announcements feed unavailable for %s: %s", t, e)
-        else:
+        elif not us:
+            # US MUST NOT reach here: _enrich_us already set news and street from
+            # EDGAR/EODHD, and this branch would overwrite both with the Bursa
+            # archive path (cached_street is KLSE-only).
             street = cached_street.get(t)
             if street:
                 c["setup"]["street"] = {k: v for k, v in street.items() if k != "_age_days"}
@@ -762,7 +765,13 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
             try:
                 news_rows, _ = db.load_counter_news(conn, t, news_limit=5)
                 c["news"] = news_rows
-            except Exception:
+            except Exception as e:
+                # NEVER swallow silently: a failed read leaves the transaction
+                # ABORTED, so every later write in this scan dies with
+                # "current transaction is aborted" and the original cause is
+                # invisible. That is exactly how the first US scan failed.
+                log.warning("counter_news read failed for %s: %s", t, e)
+                conn.rollback()
                 c["news"] = []
 
         entry = c.get("pivot") or c["price"]

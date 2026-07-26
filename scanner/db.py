@@ -264,10 +264,20 @@ def load_counter_news(conn, ticker: str, days: int = 90,
         news = [{"title": t, "publisher": s, "date": d}
                 for t, s, d in cur.fetchall()]
         cur.execute(
+            # item_id::bigint used to be the sole ordering, which is FATAL for
+            # US filings: EDGAR accession numbers look like 0001628280-26-012345
+            # and cannot cast to bigint. That error aborted the whole scan
+            # transaction. Date first (EDGAR filings always carry filingDate),
+            # falling back to the numeric id only when it IS numeric — which is
+            # the Bursa case the cast was written for, where the feed carries no
+            # year so published_at is NULL.
             """SELECT title, category, COALESCE(published_at::date::text, date_text)
                FROM counter_news
                WHERE ticker = %s AND kind = 'announcement'
-               ORDER BY item_id::bigint DESC LIMIT %s""",
+               ORDER BY published_at DESC NULLS LAST,
+                        (CASE WHEN item_id ~ '^[0-9]+$' THEN item_id::bigint END)
+                            DESC NULLS LAST
+               LIMIT %s""",
             (ticker, ann_limit))
         anns = [{"title": t[:150], "category": c, "date": d}
                 for t, c, d in cur.fetchall()]
