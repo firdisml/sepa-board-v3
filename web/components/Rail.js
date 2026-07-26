@@ -9,7 +9,11 @@ import { money } from "@/lib/format";
    uppercase line, not a panel — the rail must stay scannable in one pass. */
 
 const GROUPS = [
-  { key: "buy", label: "Buy now", tone: "g" },
+  // "Buy now" used to cover the whole swing bucket, INCLUDING counters still
+  // below their pivot — which are not buyable at all until price crosses.
+  // Entry was always the pivot, so the plan was right; only the label lied.
+  { key: "triggered", label: "Triggered · buy at open", tone: "g" },
+  { key: "atBuyPoint", label: "At buy point · buy-stop at pivot", tone: "g" },
   { key: "close", label: "Close to ready", tone: "y" },
   { key: "watchlist", label: "Watching", tone: "" },
   { key: "position", label: "Position", tone: "" },
@@ -73,14 +77,20 @@ export default function Rail({ groups, selected, onSelect, q, setQ, counts }) {
       <div className="rail-body">
         {GROUPS.map(({ key, label, tone }) => {
           const list = groups[key] || [];
-          if (!list.length && key !== "buy") return null;
+          // both buy-side groups render when empty: "nothing triggered today"
+          // is information, not an absence worth hiding
+          if (!list.length && key !== "triggered" && key !== "atBuyPoint") return null;
           return (
             <div key={key} className="rail-grp">
               <div className={"rail-grp-h" + (tone ? ` ${tone}` : "")}>
                 <span>{label}</span><span className="n">{list.length}</span>
               </div>
               {list.length === 0 ? (
-                <div className="rail-empty">Nothing at a buy point. Cash is a position.</div>
+                <div className="rail-empty">
+                  {key === "triggered"
+                    ? "Nothing crossed its pivot today."
+                    : "Nothing sitting at a buy point. Cash is a position."}
+                </div>
               ) : list.map((r) => (
                 <RailRow key={r.ticker + r.market} r={r} selected={selected} onSelect={onSelect} />
               ))}

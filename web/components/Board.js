@@ -53,14 +53,24 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
       (r.name || "").toLowerCase().includes(q.toLowerCase())));
 
   const groups = useMemo(() => {
-    const buy = visible.filter((r) => r.bucket === "swing");
+    // The swing bucket holds two situations that need OPPOSITE actions, and
+    // lumping them under one "Buy now" heading is what made the board read as
+    // "buy these tomorrow" when most were not yet buyable:
+    //   triggered  — price has crossed the pivot; actionable at the next open
+    //   at-buy-point — still below it; the entry is a BUY-STOP at the pivot,
+    //                  and nothing happens until price gets there
+    // Entry price is the pivot in both cases, so the plan was always right —
+    // only the label was lying.
+    const swing = visible.filter((r) => r.bucket === "swing");
+    const triggered = swing.filter((r) => r.toPiv != null && r.toPiv >= 0);
+    const atBuyPoint = swing.filter((r) => !(r.toPiv != null && r.toPiv >= 0));
     const close = visible
       .filter((r) => r.bucket !== "swing" && r.toPiv != null && r.toPiv > -12 && r.toPiv < 3)
       .sort((a, b) => (b.antic ?? -1) - (a.antic ?? -1) || Math.abs(a.toPiv) - Math.abs(b.toPiv));
-    const taken = new Set([...buy, ...close].map((r) => r.ticker));
+    const taken = new Set([...swing, ...close].map((r) => r.ticker));
     const rest = (b) => visible.filter((r) => r.bucket === b && !taken.has(r.ticker));
-    return { buy, close, watchlist: rest("watchlist"), position: rest("position"),
-             forming: rest("forming") };
+    return { triggered, atBuyPoint, close, watchlist: rest("watchlist"),
+             position: rest("position"), forming: rest("forming") };
   }, [visible]);
 
   // land on something actionable rather than a blank pane
@@ -72,7 +82,8 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
     } catch { /* corrupt storage — keep defaults */ }
     restored.current = true;
     const t = new URLSearchParams(window.location.search).get("t");
-    setSelected(t || groups.buy[0]?.ticker || groups.close[0]?.ticker || rows[0]?.ticker || null);
+    setSelected(t || groups.triggered[0]?.ticker || groups.atBuyPoint[0]?.ticker
+                || groups.close[0]?.ticker || rows[0]?.ticker || null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -90,8 +101,8 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
   useEffect(() => {
     if (!restored.current || !selected) return;
     if (visible.some((r) => r.ticker === selected)) return;
-    setSelected(groups.buy[0]?.ticker || groups.close[0]?.ticker
-                || visible[0]?.ticker || null);
+    setSelected(groups.triggered[0]?.ticker || groups.atBuyPoint[0]?.ticker
+                || groups.close[0]?.ticker || visible[0]?.ticker || null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [market]);
 
