@@ -338,6 +338,23 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
                      "This pattern backtests -0.38R on Bursa — verify the catalyst "
                      "(earnings, contract, corporate action) or treat as goreng."),
         })
+    # A HIGH-severity warning and "Buy now" cannot both be true. The warning
+    # texts are themselves the specification: failed_breakout says "treat this
+    # pivot as invalidated; wait for a new base to form", below_50ma says the
+    # pick "no longer qualifies as a buy". Yet bucket_candidate never consulted
+    # warnings, so a counter that broke out and fell back still landed in the
+    # buy bucket — near_pivot accepts price within 5% of the pivot while
+    # failed_breakout fires below pivot x 0.99, so BOTH are true at once
+    # (observed live on ASH and PBI, 2026-07-26).
+    #
+    # Demoted to watchlist, not dropped: the setup is real, it is just not
+    # buyable today. Same shape as the ADR demotion above.
+    if bucket == "swing" and any(w.get("severity") == "high" for w in warnings):
+        bucket = "watchlist"
+        setup_demoted = [w.get("code") for w in warnings if w.get("severity") == "high"]
+    else:
+        setup_demoted = None
+
     rules_total = len(tt["checks"])  # 8 full template; fewer on the IPO path
     setup = {
         "early_entry": early,
@@ -356,6 +373,8 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
         # which tactic the top-level entry/stop belong to, so the UI can label
         # the plan instead of implying every candidate is a pivot breakout
         "active_tactic": active_tactic,
+        # why this counter is not in "Buy now" despite reaching its pivot
+        "demoted_by": setup_demoted,
         # EP fires on neglect — deliberately NOT trend-gated. Kept on the board
         # because the gap is real information, but carried as a hazard: it
         # backtests -0.38R here (PLAN §12.1), so it also raises a warning above.

@@ -1006,3 +1006,56 @@ class TestNewsParse:
         from scanner import news
         old = {"title": "x", "url": "u", "date": "2020-01-01"}
         assert news._fresh([old]) == []
+
+
+class TestSwingNeverContradictsItsOwnWarnings:
+    """"Buy now" and a HIGH-severity warning cannot both be true. The warning
+    texts are the spec: failed_breakout says "treat this pivot as invalidated",
+    below_50ma says the pick "no longer qualifies as a buy". Observed live on
+    ASH and PBI (2026-07-26) sitting in the buy bucket with failed_breakout."""
+
+    def _breakout_then_fail(self):
+        # long uptrend -> base -> clears the pivot -> falls back under it,
+        # which is exactly the near_pivot / failed_breakout overlap: near_pivot
+        # accepts within 5% of pivot, failed_breakout fires below pivot x 0.99
+        import numpy as np, pandas as pd
+        idx = pd.bdate_range("2024-01-02", periods=400)
+        n = len(idx)
+        c = np.empty(n); v = np.full(n, 1_000_000.0)
+        c[0] = 50.0
+        for i in range(1, n):
+            if i < n - 12:
+                c[i] = c[i - 1] * 1.003
+            elif i < n - 6:
+                c[i] = c[i - 1] * (1.0005 if i % 2 else 0.9995)
+            elif i == n - 6:
+                c[i] = c[i - 1] * 1.05; v[i] = 4_000_000.0   # breakout
+            else:
+                c[i] = c[i - 1] * 0.988                       # fade back below
+        return pd.DataFrame({"Open": c * 0.999, "High": c * 1.006,
+                             "Low": c * 0.994, "Close": c, "Volume": v}, index=idx)
+
+    def test_high_severity_warning_blocks_the_buy_bucket(self):
+        from scanner import indicators, scan
+        df = self._breakout_then_fail()
+        vcp = indicators.detect_vcp(df)
+        pivot = vcp.get("pivot")
+        warns = indicators.setup_warnings(df, pivot, None, None)
+        if not any(w["severity"] == "high" for w in warns):
+            pytest.skip("fixture did not produce a high-severity warning")
+        tt = indicators.trend_template(df, rs_rank=90)
+        if not tt["pass_all"]:
+            pytest.skip("fixture does not pass the Trend Template")
+        c = scan.build_candidate("T", df, 90, tt, "US", scan.MARKETS["US"])
+        assert c["bucket"] != "swing", (
+            "a counter the system warns about at HIGH severity must not be "
+            "presented as Buy now")
+        assert c["setup"].get("demoted_by"), "the demotion reason must be recorded"
+
+    def test_demotion_reason_is_recorded_for_the_ui(self):
+        # the board has to be able to explain why a pivot-reaching counter is
+        # not in the buy bucket, or the demotion just looks like a bug
+        from scanner import scan
+        import inspect
+        src = inspect.getsource(scan.build_candidate)
+        assert '"demoted_by": setup_demoted' in src
