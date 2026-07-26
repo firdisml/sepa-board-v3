@@ -26,7 +26,7 @@ import pandas_market_calendars as mcal
 import requests
 
 from . import (db, edgar, fundamentals, indicators, klse_client, news, patterns,
-               performance, reasoning, sectors, us_news, warehouse)
+               performance, reasoning, sectors, us_fundamentals, us_news, warehouse)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scan")
@@ -489,7 +489,8 @@ def _earnings_info(dossier: dict | None) -> dict | None:
             "last_announced": last["announced"]}
 
 
-def _enrich_us(conn, c: dict) -> None:
+def _enrich_us(conn, c: dict, us_fund_cache: dict | None = None,
+               us_fund_fresh: dict | None = None) -> None:
     """Filings + headlines for one US candidate — the EDGAR/EODHD counterpart
     of the KLSE Screener dossier path (PLAN §7.1/§7.2).
 
@@ -503,8 +504,24 @@ def _enrich_us(conn, c: dict) -> None:
     worse-informed; a scan that dies here publishes no board at all.
     """
     t = c["ticker"]
+    # Fundamentals from SEC XBRL, cache-first. companyfacts payloads are 2-4MB
+    # each and quarterly numbers change four times a year, so re-pulling 70+ of
+    # them nightly would be ~200MB of transfer for data that did not move.
+    # Reuses the bursa_fundamentals table: the name is now a misnomer, but the
+    # shape (ticker, data jsonb, updated_at) and the grade contract are
+    # identical, and a second table would fork the one fundamentals shape the
+    # pipeline speaks.
     c["fundamentals"] = None
     c["earnings"] = None
+    cached = (us_fund_cache or {}).get(t)
+    if cached and cached.get("grade") is not None:
+        c["fundamentals"] = {k: v for k, v in cached.items() if k != "_age_days"}
+    else:
+        fresh = us_fundamentals.for_ticker(t)
+        if fresh:
+            c["fundamentals"] = fresh
+            if us_fund_fresh is not None:
+                us_fund_fresh[t] = fresh
     filings = []
     try:
         filings = edgar.material_filings(t, limit=30)
@@ -699,7 +716,7 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         # would silently ship US candidates with no targets and no reasoning.
         us = c.get("market") == "US"
         if us:
-            _enrich_us(conn, c)
+            _enrich_us(conn, c, cached_fund, fresh_fund)
 
         dossier = None
         if not us and t in to_fetch:
