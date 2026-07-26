@@ -728,16 +728,24 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         # fundamentals: fresh parse wins; else last-known-good, tagged with age.
         # A throttled fetch must never erase a grade we already had (the bug on
         # 2026-07-23 that NULLed all 39 candidates at once).
-        fresh = fundamentals.from_dossier(dossier) if (dossier and not us) else None
-        if fresh:
-            c["fundamentals"] = fresh
-            fresh_fund[t] = fresh
-        else:
-            # only reuse a cached entry that actually carries a grade; a
-            # gradeless dict stored verbatim would render as a truthy-but-empty
-            # fundamentals object, which is worse than an honest None
-            cached = cached_fund.get(t) if not us else None
-            c["fundamentals"] = cached if (cached and cached.get("grade")) else None
+        #
+        # WHOLLY SKIPPED FOR US: _enrich_us has already set fundamentals from
+        # SEC XBRL. An earlier version only guarded the `from_dossier` call, so
+        # for US `fresh` was always None, the else-branch fired, and it blanked
+        # the grade _enrich_us had just computed — 50 correct grades were
+        # cached while the board showed none. Same clobbering shape as the
+        # news bug in the dossier branch below; both need `not us`.
+        if not us:
+            fresh = fundamentals.from_dossier(dossier) if dossier else None
+            if fresh:
+                c["fundamentals"] = fresh
+                fresh_fund[t] = fresh
+            else:
+                # only reuse a cached entry that actually carries a grade; a
+                # gradeless dict stored verbatim would render as a
+                # truthy-but-empty fundamentals object, worse than honest None
+                cached = cached_fund.get(t)
+                c["fundamentals"] = cached if (cached and cached.get("grade")) else None
 
         if not us:
             c["earnings"] = _earnings_info(dossier)

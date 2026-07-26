@@ -125,3 +125,57 @@ class TestGradeContract:
 
     def test_bursa_ticker_returns_none(self):
         assert uf.for_ticker("1155.KL") is None
+
+
+class TestEnrichUsNotClobbered:
+    """The US branch of scan.enrich has now clobbered _enrich_us's output TWICE
+    — first news, then fundamentals — because `dossier` is None for US and the
+    Bursa else-branches fire. These pin the shape so it cannot happen a third
+    time."""
+
+    def test_fundamentals_block_is_guarded_by_not_us(self):
+        import inspect
+        from scanner import scan
+        src = inspect.getsource(scan.enrich)
+        i = src.index("fundamentals: fresh parse wins")
+        block = src[i:i + 1400]
+        assert "if not us:" in block, (
+            "the fundamentals block must be skipped for US — otherwise "
+            "`fresh` is always None, the else fires, and it nulls the grade "
+            "_enrich_us computed from XBRL")
+
+    def test_news_block_is_guarded_by_not_us(self):
+        import inspect
+        from scanner import scan
+        src = inspect.getsource(scan.enrich)
+        assert "elif not us:" in src, (
+            "the cached-street/news branch must not run for US, or it "
+            "overwrites EODHD headlines with the Bursa archive")
+
+    def test_enrich_us_sets_fundamentals_from_xbrl(self, monkeypatch):
+        from scanner import scan, us_fundamentals
+        monkeypatch.setattr(us_fundamentals, "for_ticker",
+                            lambda t: {"grade": "A", "source": "sec-xbrl"})
+        monkeypatch.setattr(scan.edgar, "material_filings", lambda t, limit=30: [])
+        monkeypatch.setattr(scan.us_news, "headlines",
+                            lambda t, **kw: [])
+        monkeypatch.setattr(scan.db, "save_counter_news", lambda *a, **k: 0)
+        c = {"ticker": "ACME", "market": "US", "setup": {}, "name": None}
+        fresh = {}
+        scan._enrich_us(object(), c, {}, fresh)
+        assert c["fundamentals"]["grade"] == "A"
+        assert fresh["ACME"]["grade"] == "A", "must land in the cache for reuse"
+
+    def test_cached_grade_is_reused_without_refetch(self, monkeypatch):
+        from scanner import scan, us_fundamentals
+        called = []
+        monkeypatch.setattr(us_fundamentals, "for_ticker",
+                            lambda t: called.append(t) or {"grade": "B"})
+        monkeypatch.setattr(scan.edgar, "material_filings", lambda t, limit=30: [])
+        monkeypatch.setattr(scan.us_news, "headlines", lambda t, **kw: [])
+        monkeypatch.setattr(scan.db, "save_counter_news", lambda *a, **k: 0)
+        c = {"ticker": "ACME", "market": "US", "setup": {}, "name": None}
+        # a 2-4MB companyfacts payload per counter is why the cache exists
+        scan._enrich_us(object(), c, {"ACME": {"grade": "A"}}, {})
+        assert c["fundamentals"]["grade"] == "A"
+        assert called == [], "a cached grade must not trigger a refetch"
