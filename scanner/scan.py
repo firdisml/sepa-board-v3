@@ -25,8 +25,8 @@ import pandas as pd
 import pandas_market_calendars as mcal
 import requests
 
-from . import (db, fundamentals, indicators, klse_client, news, patterns,
-               performance, reasoning, sectors, warehouse)
+from . import (db, edgar, fundamentals, indicators, klse_client, news, patterns,
+               performance, reasoning, sectors, us_news, warehouse)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scan")
@@ -489,6 +489,58 @@ def _earnings_info(dossier: dict | None) -> dict | None:
             "last_announced": last["announced"]}
 
 
+def _enrich_us(conn, c: dict) -> None:
+    """Filings + headlines for one US candidate — the EDGAR/EODHD counterpart
+    of the KLSE Screener dossier path (PLAN §7.1/§7.2).
+
+    Deliberately partial, and honest about it: `fundamentals` stays None
+    because no US fundamentals source is wired yet, and the UI already renders
+    that as withheld rather than as a passing grade. What this DOES give a US
+    counter is the catalyst trail (was there a contract win inside the base?)
+    and the headline risk the price data cannot show.
+
+    Every step degrades independently. A counter with no filings is
+    worse-informed; a scan that dies here publishes no board at all.
+    """
+    t = c["ticker"]
+    c["fundamentals"] = None
+    c["earnings"] = None
+    filings = []
+    try:
+        filings = edgar.material_filings(t, limit=30)
+    except Exception as e:
+        log.info("EDGAR filings unavailable for %s: %s", t, e)
+
+    heads = []
+    try:
+        heads = us_news.headlines(t, limit=8, company=c.get("name"))
+    except Exception as e:
+        log.info("EODHD news unavailable for %s: %s", t, e)
+
+    c["news"] = heads[:5]
+    if filings:
+        c["setup"]["street"] = {
+            "url": f"https://www.sec.gov/cgi-bin/browse-edgar"
+                   f"?action=getcompany&CIK={t}&type=8-K&dateb=&owner=include&count=40",
+            "announcements": [
+                {"title": f["title"], "category": f["category"], "date": f["date"]}
+                for f in filings[:8]
+            ],
+            # no US analog wired yet for either; omitted rather than faked as empty
+            "shareholding": None,
+            "dividends": [],
+        }
+    # Durable archive (§7.2), same table and shapes as the Bursa path so the
+    # AI's catalyst lookback and the stock page read one schema for both markets.
+    try:
+        if filings:
+            db.save_counter_news(conn, t, "announcement", filings)
+        if heads:
+            db.save_counter_news(conn, t, "news", heads)
+    except Exception as e:
+        log.warning("counter_news persist failed for %s: %s", t, e)
+
+
 def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> None:
     """Names + industry groups + fundamentals + street data, all from KLSE
     Screener. One universe request covers every counter's name and sector;
@@ -512,6 +564,31 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
             meta[r["ticker"]] = m
     except Exception as e:
         log.warning("universe table unavailable (%s) — falling back to cached meta", e)
+
+    # US industry comes from EDGAR's SIC description — the universe table above
+    # is KLSE Screener and covers Bursa only, so without this every US
+    # candidate carries a NULL industry, which silently disables group-RS for
+    # the entire market (a group's median rank needs members). Only fetched
+    # for counters we don't already have an industry for; the meta row is
+    # durable and a company's SIC code effectively never changes.
+    us_missing = [c["ticker"] for c in candidates
+                  if c.get("market") == "US"
+                  and not (meta.get(c["ticker"]) or {}).get("industry")]
+    for t in us_missing:
+        try:
+            info = edgar.company_info(t)
+        except Exception as e:
+            log.info("EDGAR profile unavailable for %s: %s", t, e)
+            continue
+        if not info:
+            continue
+        m = {"name": info.get("name"), "industry": info.get("industry"),
+             "sector": info.get("sector")}
+        meta[t] = {**(meta.get(t) or {}), **m}
+        fresh[t] = meta[t]
+    if us_missing:
+        log.info("[US] EDGAR profiles fetched for %d counters missing industry",
+                 len(us_missing))
 
     for c in candidates:
         m = meta.get(c["ticker"]) or {}
@@ -616,8 +693,16 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         t = c["ticker"]
         c["group_rs"] = group_rs_by_market.get(c["market"], {}).get(c.get("industry"))
 
+        # US counters take the EDGAR/EODHD path; everything below this block
+        # is KLSE Screener, which covers Bursa only. The shared tail
+        # (targets/reasoning) still runs for both — an early `continue` here
+        # would silently ship US candidates with no targets and no reasoning.
+        us = c.get("market") == "US"
+        if us:
+            _enrich_us(conn, c)
+
         dossier = None
-        if t in to_fetch:
+        if not us and t in to_fetch:
             try:
                 dossier = klse_client.dossier(klse_client.code_of(t), session=session)
             except Exception as e:
@@ -626,7 +711,7 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
         # fundamentals: fresh parse wins; else last-known-good, tagged with age.
         # A throttled fetch must never erase a grade we already had (the bug on
         # 2026-07-23 that NULLed all 39 candidates at once).
-        fresh = fundamentals.from_dossier(dossier) if dossier else None
+        fresh = fundamentals.from_dossier(dossier) if (dossier and not us) else None
         if fresh:
             c["fundamentals"] = fresh
             fresh_fund[t] = fresh
@@ -634,10 +719,11 @@ def enrich(conn, candidates: list[dict], ranks_by_market: dict[str, dict]) -> No
             # only reuse a cached entry that actually carries a grade; a
             # gradeless dict stored verbatim would render as a truthy-but-empty
             # fundamentals object, which is worse than an honest None
-            cached = cached_fund.get(t)
+            cached = cached_fund.get(t) if not us else None
             c["fundamentals"] = cached if (cached and cached.get("grade")) else None
 
-        c["earnings"] = _earnings_info(dossier)
+        if not us:
+            c["earnings"] = _earnings_info(dossier)
         if dossier:
             c["news"] = dossier.get("news", [])[:5]
             c["setup"]["street"] = {
