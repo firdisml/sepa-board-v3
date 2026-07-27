@@ -134,11 +134,21 @@ def _drop_ghost_days(C: pd.DataFrame, min_coverage: float = 0.2) -> pd.Index:
     return C.index[C.notna().mean(axis=1) >= min_coverage]
 
 
-def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout") -> pd.DataFrame:
-    """Entry signals for tickers sharing ONE trading calendar."""
-    C, H, L, V, O = (_matrix(data, f) for f in ("Close", "High", "Low", "Volume", "Open"))
-    real = _drop_ghost_days(C)
-    C, H, L, V, O = (M.loc[real] for M in (C, H, L, V, O))
+def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout",
+                        mats: dict | None = None) -> pd.DataFrame:
+    """Entry signals for tickers sharing ONE trading calendar.
+
+    `mats` lets the caller pass matrices built ONCE. Without it this function,
+    run_backtest and _ma50_matrix each rebuilt their own copies of the same
+    frames — three times the peak footprint, which is what OOM-killed the US
+    deep-history run (9,263 tickers x 1,250 bars).
+    """
+    if mats is not None:
+        C, H, L, V, O = (mats[k] for k in ("C", "H", "L", "V", "O"))
+    else:
+        C, H, L, V, O = (_matrix(data, f) for f in ("Close", "High", "Low", "Volume", "Open"))
+        real = _drop_ghost_days(C)
+        C, H, L, V, O = (M.loc[real] for M in (C, H, L, V, O))
 
     ma50 = C.rolling(50).mean()
     ma150 = C.rolling(150).mean()
@@ -286,7 +296,8 @@ def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout
     return (tt & cross & volume_ok).fillna(False)
 
 
-def signals(data: dict[str, pd.DataFrame], strategy: str = "breakout") -> pd.DataFrame:
+def signals(data: dict[str, pd.DataFrame], strategy: str = "breakout",
+            mats: dict | None = None) -> pd.DataFrame:
     """Boolean entry-signal matrix (dates x tickers), no lookahead.
 
     Computed PER MARKET on that market's own calendar, then merged. Mixing
@@ -295,8 +306,11 @@ def signals(data: dict[str, pd.DataFrame], strategy: str = "breakout") -> pd.Dat
     200-day MA with any NaN in the window is NaN, which silently evaluated
     the Trend Template to False for every ticker on every day.
     """
-    parts = [_signals_one_market(sub, strategy) for sub in _by_market(data).values()]
-    merged = pd.concat(parts, axis=1).sort_index()
+    if mats is not None:
+        merged = _signals_one_market(None, strategy, mats=mats)
+    else:
+        parts = [_signals_one_market(sub, strategy) for sub in _by_market(data).values()]
+        merged = pd.concat(parts, axis=1).sort_index()
     return merged.fillna(False).astype(bool)
 
 
@@ -371,10 +385,33 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
     p = {**DEFAULTS, **{k: v for k, v in kw.items() if v is not None}}
     p["costs"] = costs
     total_fees = 0.0
-    sig = signals(data, p["strategy"])
-    O, H, L, C = (_matrix(data, f) for f in ("Open", "High", "Low", "Close"))
-    ma50 = _ma50_matrix(data).reindex(sig.index)
-    O, H, L, C = (M.reindex(sig.index) for M in (O, H, L, C))
+    # Build every matrix ONCE and share it: signals(), this block and
+    # _ma50_matrix each used to construct their own, so three copies were live
+    # at peak — that is what OOM-killed the US deep-history run.
+    #
+    # ONLY for a single-market universe. signals() splits by market on purpose
+    # (mixing calendars puts a NaN in every rolling window and silently zeroes
+    # the Trend Template), and one shared matrix set cannot honour that. The
+    # production path is single-market — run_per_market always splits first —
+    # so the optimisation applies exactly where the scale problem is, and
+    # mixed-market callers keep the correct, slower path.
+    if len(_by_market(data)) == 1:
+        _C = _matrix(data, "Close")
+        real = _drop_ghost_days(_C)
+        mats = {"C": _C.loc[real]}
+        for k, f in (("H", "High"), ("L", "Low"), ("V", "Volume"), ("O", "Open")):
+            mats[k] = _matrix(data, f).loc[real]
+        del _C
+        sig = signals(None, p["strategy"], mats=mats)
+        O, H, L, C = (mats[k] for k in ("O", "H", "L", "C"))
+        ma50 = C.rolling(50).mean()
+        mats.clear()
+        O, H, L, C, ma50 = (M.reindex(sig.index) for M in (O, H, L, C, ma50))
+    else:
+        sig = signals(data, p["strategy"])
+        O, H, L, C = (_matrix(data, f) for f in ("Open", "High", "Low", "Close"))
+        ma50 = _ma50_matrix(data).reindex(sig.index)
+        O, H, L, C = (M.reindex(sig.index) for M in (O, H, L, C))
     dates = sig.index
     if not sig.values.any():
         log.warning("Zero entry signals over the whole period — check universe/history length.")

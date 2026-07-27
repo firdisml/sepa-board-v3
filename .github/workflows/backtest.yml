@@ -43,10 +43,15 @@ jobs:
   backtest:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    # warehouse-backed runs: 972 tickers x 2y vectorised in ~3s, wall time is
-    # warehouse I/O. --deep-history fetches the whole live+delisted directory
-    # one ticker at a time (~1,100 calls for KLSE) — budget ~10min for that.
-    timeout-minutes: 30
+    # Warehouse-backed runs finish in minutes. --deep-history is the long pole
+    # and scales with the EXCHANGE, not the strategy: KLSE is ~1,200 symbols
+    # (~10 min), but US is 23,217 once delisted names are included — 6,558 live
+    # plus 16,659 delisted — which takes ~28 minutes of fetching alone. At the
+    # old 30-minute ceiling the US run spent 29.6 min fetching and was killed
+    # before the backtest could run, reported only as "failure".
+    # Subsequent same-week runs hit the parquet cache and finish quickly; this
+    # budget is for the first cold fetch of a large exchange.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
