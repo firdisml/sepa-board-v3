@@ -665,3 +665,21 @@ class TestReversalStrategies:
         for strat in STRATEGIES:
             r = run_backtest(data, strategy=strat)
             assert len(r["equity"]) > 0, f"{strat} produced no curve"
+
+
+class TestWorkflowStaysInSyncWithCode:
+    def test_every_strategy_is_dispatchable(self):
+        """backtest.yml's `strategy` input is a CHOICE list, so a strategy
+        missing from it cannot be run in CI at all — the dispatch fails with
+        HTTP 422 'not in the list of allowed values'. That happened silently
+        for ma200_reclaim and undercut_rally, and a polling loop reported
+        'success' by picking up an unrelated older run."""
+        import pathlib, yaml
+        from scanner.backtest import STRATEGIES
+        wf = yaml.safe_load(
+            (pathlib.Path(__file__).parent.parent.parent
+             / ".github/workflows/backtest.yml").read_text())
+        # PyYAML parses the `on:` key as boolean True
+        opts = wf[True]["workflow_dispatch"]["inputs"]["strategy"]["options"]
+        missing = set(STRATEGIES) - set(opts)
+        assert not missing, f"not dispatchable in CI: {sorted(missing)}"

@@ -21,7 +21,8 @@ on:
       strategy:
         description: "Entry strategy"
         type: choice
-        options: [breakout, ma20_bounce, ma50_bounce, episodic_pivot, pocket_pivot, buyable_gap_up]
+        options: [breakout, ma20_bounce, ma50_bounce, episodic_pivot, pocket_pivot,
+                  buyable_gap_up, ma200_reclaim, undercut_rally]
         default: breakout
       years:
         description: "Years of history"
