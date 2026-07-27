@@ -6,6 +6,20 @@ const LABEL = {
   breakout: "Breakout", early_entry: "Early entry", ma20_bounce: "20MA bounce",
   ma50_bounce: "50MA bounce", episodic_pivot: "Episodic pivot",
   pocket_pivot: "Pocket pivot", buyable_gap_up: "Buyable gap-up",
+  ma200_reclaim: "200MA reclaim", undercut_rally: "Undercut & rally",
+};
+
+// Tactics the board can actually SELECT as a counter's active_tactic. Every
+// other row here is evidence — measured, recorded, and deliberately not
+// traded. Without this distinction a rejected tactic sitting in the winner
+// table reads as something the board might act on.
+const LIVE = new Set(["breakout", "ma20_bounce", "ma50_bounce"]);
+const REJECTED_NOTE = {
+  episodic_pivot: "hazard — never a buy plan",
+  ma200_reclaim: "reversal, measured negative",
+  undercut_rally: "reversal, measured negative",
+  pocket_pivot: "measured weak, not promoted",
+  buyable_gap_up: "measured well, awaiting a second window",
 };
 
 const fmtR = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}R`);
@@ -37,8 +51,10 @@ export default function BacktestWinner({ runs }) {
       <h3>Winner — newest result per strategy</h3>
       <div className="reasoning" style={{ marginBottom: 10 }}>
         One row per tactic: its most recently saved backtest, ranked by
-        expectancy. A tactic can be stale here if it hasn't been re-run since —
-        check "As of" before trusting a row over the nightly breakout scoreboard.
+        expectancy. Rows marked <b>not traded</b> are evidence, not
+        recommendations — measured on the same basis and deliberately kept out
+        of the board&apos;s rotation. A tactic can also be stale here if it
+        hasn&apos;t been re-run since; check &quot;As of&quot; first.
       </div>
       <div className="bt-wrap">
         <table className="bt win">
@@ -64,6 +80,12 @@ export default function BacktestWinner({ runs }) {
                     <span className="sym">{LABEL[r.params?.strategy] || r.params?.strategy || "—"}</span>
                     {i === 0 && <span className="tag good">WINNER</span>}
                     {exp != null && exp < 0 && <span className="tag bad">neg edge</span>}
+                    {!LIVE.has(r.params?.strategy) && (
+                      <span className="tag neutral"
+                            title={REJECTED_NOTE[r.params?.strategy] || "not in the live rotation"}>
+                        not traded
+                      </span>
+                    )}
                   </td>
                   <td className={"ta-r num" + (exp == null ? "" : exp > 0 ? " pos" : " neg")}>
                     {fmtR(exp)}
