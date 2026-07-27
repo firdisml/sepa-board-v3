@@ -17,7 +17,7 @@
 // first place to breakout.
 const BACKTEST = {
   breakout: 0.33, buyable_gap_up: 0.30, ma20_bounce: 0.20,
-  pocket_pivot: 0.08, ma50_bounce: -0.01, episodic_pivot: -0.38,
+  pocket_pivot: 0.08, ma50_bounce: -0.01, episodic_pivot: -0.35,
 };
 
 const LABEL = {

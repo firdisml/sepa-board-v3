@@ -171,6 +171,48 @@ Unlocks the §7.1 question: *was there a contract win inside the base?*
 
 ---
 
+## Reversal strategies: MEASURED AND REJECTED (2026-07-27)
+
+The board had no reversal tactic — every entry was trend-continuation gated on
+the Trend Template, so a stock is invisible until AFTER its first leg (30% off
+the low, within 25% of the high). Two reversal tactics were built and measured
+on the fair basis (5y, full universe, delisted incl.) with an exit rule
+corrected to be fair to them:
+
+| tactic         | exp   |   n | win% |   PF | CAGR%  | maxDD% |
+|----------------|-------|-----|------|------|--------|--------|
+| ma200_reclaim  | -0.14 | 415 | 19.8 | 0.75 | -15.87 | -64.28 |
+| undercut_rally | -0.45 | 657 | 22.1 | 0.36 | -49.87 | -96.99 |
+
+**Both rejected.** Neither clears +0.25R, and both breach the -40% drawdown
+limit badly. Not on the board, not in any rotation.
+
+A methodological note worth keeping: the FIRST measurement was invalid. The
+"close below the 50MA" exit fired on the entry bar for reversal entries (which
+sit below the 50MA by nature), so undercut_rally held 2.3 days and exited 75%
+of the time via that rule — measuring "enter and immediately exit". The exit
+now arms only once price has closed above the 50MA during the trade, a strict
+no-op for every trend-gated tactic. Re-measured fairly, undercut_rally got
+WORSE (-0.27 -> -0.45): the premature exit had been cutting its losses.
+
+**The pattern across all eight tactics is now unambiguous:**
+
+    trend-gated      breakout +0.33, buyable_gap_up +0.30,
+                     ma20_bounce +0.20, pocket_pivot +0.08     ALL POSITIVE
+    not trend-gated  ma50_bounce -0.01, ma200_reclaim -0.14,
+                     episodic_pivot -0.35, undercut_rally -0.45  ALL NEGATIVE
+
+Perfect separation, and expectancy correlates INVERSELY with trade count
+(223 trades -> +0.33R; 657 -> -0.45R). On Bursa the Trend Template gate is not
+a limitation on the strategy — it IS the edge. Buying anything not already in
+a confirmed uptrend has lost money in every form tested.
+
+Do not re-attempt counter-trend entries here without evidence that overturns
+this. Still open and NOT covered by the above: Weinstein Stage 1->2 transition
+(requires the MA to be TURNING UP, so it is trend-initiation rather than
+counter-trend) and catalyst-gated episodic_pivot (tests whether EP fails for
+lack of a catalyst filter rather than being inherently broken).
+
 ## Open judgement calls
 
 - **`ma50_bounce` is still a full setup** despite -0.19R over 151 trades. EP was
