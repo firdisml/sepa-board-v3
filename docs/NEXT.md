@@ -214,6 +214,36 @@ this. Still open and NOT covered by the above: Weinstein Stage 1->2 transition
 counter-trend) and catalyst-gated episodic_pivot (tests whether EP fails for
 lack of a catalyst filter rather than being inherently broken).
 
+## Weekly-timeframe confirmation: MEASURED, REDUNDANT (2026-07-28)
+
+Multi-timeframe confirmation (Weinstein's 30-week Stage line) was built and
+gated onto breakout. It changes NOTHING, on either market:
+
+  MY  breakout +0.01 n=64   ->  breakout_weekly -0.01 n=64
+  US  breakout +0.40 n=83   ->  breakout_weekly +0.40 n=83
+
+Identical trade counts, because the gate is redundant with the Trend Template:
+
+  trend-template-true cells   5,931
+  ... also weekly Stage 2     5,892  (99%)
+  ... removed by the gate        39  (0.7%)
+
+A 30-week MA IS approximately a 150-day MA, and the Trend Template already
+requires price above the 150MA, 150 > 200, and the 200 rising. "Above a rising
+30-week MA" is therefore already asserted daily. The gate was dropped rather
+than shipped as decoration.
+
+Note the reverse direction: 48,436 cells are weekly-Stage-2 while the Trend
+Template is FALSE. A weekly-based screen would surface far MORE candidates —
+but those are precisely the names the daily template rejects, and every
+non-trend-gated tactic measured here has lost money. Looser is not the
+opportunity it appears to be.
+
+scanner/weekly.py is KEPT: the resampling, Stage classification and the
+no-lookahead alignment are still the right foundation for a weekly CHART and a
+Stage label on the dossier, which is a reading aid for a human rather than a
+gate on the machine. What is NOT worth re-testing is this same 30-week gate.
+
 ## Open judgement calls
 
 - **`ma50_bounce` is still a full setup** despite -0.19R over 151 trades. EP was
