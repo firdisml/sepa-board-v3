@@ -26,7 +26,8 @@ import pandas_market_calendars as mcal
 import requests
 
 from . import (db, edgar, fundamentals, indicators, klse_client, news, patterns,
-               performance, reasoning, sectors, us_fundamentals, us_news, warehouse)
+               performance, reasoning, sectors, us_fundamentals, us_news, warehouse,
+               weekly)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scan")
@@ -418,6 +419,13 @@ def build_candidate(t: str, df: pd.DataFrame, rank: int, tt: dict, market: str,
         # backtests -0.38R here (PLAN §12.1), so it also raises a warning above.
         "episodic_pivot": ep_setup,
         "base_count": indicators.base_count(df),
+        # Weinstein's 30-week Stage line. Measured as a GATE it is redundant
+        # with the Trend Template (99% overlap — see NEXT.md), so it is carried
+        # as READING, not as a filter: it tells a human, and the AI, whether
+        # the base is Stage 2 on the weekly chart and how far price sits from
+        # the line. to_weekly drops the in-progress week, so this never uses a
+        # partial candle.
+        "weekly": weekly.confirmation(df),
         "warnings": warnings,
         **indicators.tightening_now(df),
     }
@@ -1042,6 +1050,27 @@ def main() -> int:
              "v50": int(v50.loc[i]) if pd.notna(v50.loc[i]) else None}
             for i, r in d.iterrows()
         ]
+
+        # WEEKLY candles for the chart toggle. A base is 7-65 weeks; on daily
+        # bars that is 35-325 candles and the shape is hard to read, which is
+        # the whole reason Weinstein and Minervini teach on weekly charts.
+        # to_weekly drops the in-progress week, so the last candle here is
+        # always a CLOSED one — a partial week would render as a stunted bar
+        # and misread as weakness.
+        try:
+            wk = weekly.to_weekly(df)
+            wma = wk["Close"].rolling(30).mean()
+            wd = wk.iloc[-120:]
+            c["candles_weekly"] = [
+                {"t": i.strftime("%Y-%m-%d"), "o": round(float(r["Open"]), dp),
+                 "h": round(float(r["High"]), dp), "l": round(float(r["Low"]), dp),
+                 "c": round(float(r["Close"]), dp), "v": int(r["Volume"]),
+                 "m30w": round(float(wma.loc[i]), dp) if pd.notna(wma.loc[i]) else None}
+                for i, r in wd.iterrows()
+            ]
+        except Exception as e:
+            log.info("weekly candles unavailable for %s: %s", c["ticker"], e)
+            c["candles_weekly"] = []
 
     # Sector rotation is ETF-based and Bursa has no sector ETFs, so the MY
     # equivalent is industry-group RS (§4.2), already computed in enrich().

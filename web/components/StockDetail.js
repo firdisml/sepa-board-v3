@@ -89,6 +89,7 @@ export default function StockDetail({ c, regime, latestRun, btByMarket, btByStra
     "Position sizing",
   ].filter(Boolean);
   const [tab, setTab] = useState(TABS[0]);
+  const [tf, setTf] = useState("D");
   const activeTab = TABS.includes(tab) ? tab : TABS[0];
   const warnCount = (setup.warnings || []).length + (c.earnings?.high_risk ? 1 : 0);
 
@@ -111,15 +112,41 @@ export default function StockDetail({ c, regime, latestRun, btByMarket, btByStra
       )}
 
       <div className="panel">
-        <Candles candles={c.candles} pivot={c.pivot} market={c.market} levels={btLevels}
-          markers={c.patterns?.chart_markers} swings={vcp.swings} contractions={contr}
-          bases={setup.base_count?.bases} />
+        {(c.candles_weekly || []).length > 0 && (
+          <div className="mkt-switch" style={{ marginBottom: 8 }}>
+            {[["D", "Daily"], ["W", "Weekly"]].map(([k, label]) => (
+              <button key={k} className={"chip" + (tf === k ? " on" : "")}
+                      onClick={() => setTf(k)}>{label}</button>
+            ))}
+          </div>
+        )}
+        {/* Weekly candles carry only m30w — the 20/50/150/200 day MAs are
+            meaningless on a weekly axis, and drawing them would imply the
+            chart shows something it does not. */}
+        <Candles
+          candles={tf === "W" ? c.candles_weekly : c.candles}
+          weekly={tf === "W"}
+          pivot={c.pivot} market={c.market}
+          levels={tf === "W" ? [] : btLevels}
+          markers={tf === "W" ? [] : c.patterns?.chart_markers}
+          swings={tf === "W" ? [] : vcp.swings}
+          contractions={tf === "W" ? [] : contr}
+          bases={tf === "W" ? [] : setup.base_count?.bases} />
         <div className="legend">
-          <span><span className="l20">—</span> 20 MA</span>
-          <span><span className="l50">—</span> 50 MA</span>
-          <span><span className="l150">—</span> 150 MA</span>
-          <span><span className="l200">—</span> 200 MA</span>
-          {contr.length > 0 && <span className="right">Contractions: {contr.map((d) => d + "%").join(" → ")}</span>}
+          {tf === "W" ? (
+            <span><span className="l150">—</span> 30-week MA (Weinstein Stage line)</span>
+          ) : (
+            <>
+              <span><span className="l20">—</span> 20 MA</span>
+              <span><span className="l50">—</span> 50 MA</span>
+              <span><span className="l150">—</span> 150 MA</span>
+              <span><span className="l200">—</span> 200 MA</span>
+            </>
+          )}
+          {tf === "D" && contr.length > 0 && <span className="right">Contractions: {contr.map((d) => d + "%").join(" → ")}</span>}
+          {tf === "W" && setup.weekly && (
+            <span className="right">{setup.weekly.note}</span>
+          )}
         </div>
       </div>
 
@@ -139,6 +166,14 @@ export default function StockDetail({ c, regime, latestRun, btByMarket, btByStra
           )}
         </span>
         <span className="fact">RS <b>{c.rs_rank ?? "—"}</b></span>
+        {setup.weekly && (
+          <span className="fact" title={setup.weekly.note}>
+            Weekly{" "}
+            <b style={{ color: setup.weekly.stage2_weekly ? "var(--green)" : "var(--amber)" }}>
+              {setup.weekly.stage2_weekly ? "Stage 2" : "not Stage 2"}
+            </b>
+          </span>
+        )}
         {vcp.vcp && <span className="fact" style={{ color: "var(--green)" }}>VCP {contr.length}T</span>}
         {c.pivot && <span className="fact">Pivot <b>{money(c.pivot, c.market)}</b></span>}
         {c.stop && <span className="fact">Stop <b>{money(c.stop, c.market)}</b></span>}

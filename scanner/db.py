@@ -61,8 +61,8 @@ def save_run(conn, run_date: str, regime: dict, candidates: list[dict], sectors:
                     extended, checks, vcp, extension, earnings, news,
                     target_2r, target_3r, reasoning, candles, levels,
                     adr_pct, quality, industry, group_rs, market, patterns, setup, name,
-                    reasoning_sections, fundamentals)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    reasoning_sections, fundamentals, candles_weekly)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (run_id, c["ticker"], c["bucket"], c["rs_rank"], c["price"],
                  c.get("pivot"), c.get("stop"), c.get("sector"),
                  c.get("extended", False), json.dumps(c.get("checks", {})),
@@ -75,7 +75,8 @@ def save_run(conn, run_date: str, regime: dict, candidates: list[dict], sectors:
                  c.get("market", "US"), json.dumps(c.get("patterns", {})),
                  json.dumps(c.get("setup", {})), c.get("name"),
                  json.dumps(c.get("reasoning_sections", [])),
-                 json.dumps(c.get("fundamentals"))),
+                 json.dumps(c.get("fundamentals")),
+                 json.dumps(c.get("candles_weekly", []))),
             )
 
         # NOT market-scoped, unlike candidates: sector_ranks has no market

@@ -249,6 +249,16 @@ def _note_payload(c: dict, headlines: list[dict], regime_light: str | None = Non
     """Pure prompt builder for one candidate's trade plan + news note (unit-tested)."""
     setup = c.get("setup") or {}
     vcp = c.get("vcp") or {}
+    weekly_task = (
+        " weekly_stage is Weinstein's 30-week (Stage) line on the WEEKLY chart: "
+        "stage2_weekly means price is above a RISING 30-week MA. Use it for the "
+        "BIG-PICTURE read — a base that is Stage 2 weekly is a pullback inside a "
+        "longer uptrend, while one that is not is a counter-trend bounce however "
+        "good the daily chart looks. Do NOT treat it as an extra confirmation of "
+        "the daily setup: it is measured 99% redundant with the Trend Template, "
+        "so saying 'weekly confirms daily' adds nothing."
+        if (c.get("setup") or {}).get("weekly") else ""
+    )
     ann_task = (
         " recent_announcements are Bursa filings with a CODE-assigned category "
         "(you never re-classify): results/contract dated inside or just before "
@@ -314,7 +324,7 @@ def _note_payload(c: dict, headlines: list[dict], regime_light: str | None = Non
             "the setup; decelerating growth, shrinking margins, or a big negative "
             "surprise are warnings worth naming with their numbers. Growth off a "
             "negative base shows as null — say 'unprofitable base quarter', "
-            "don't guess." + ann_task + search_task
+            "don't guess." + weekly_task + ann_task + search_task
         ),
         "output_schema": {
             "risk": "low|medium|high|unknown",
@@ -348,6 +358,10 @@ def _note_payload(c: dict, headlines: list[dict], regime_light: str | None = Non
             "momentum_burst": setup.get("momentum_burst"),
             "anticipation": setup.get("anticipation"),
             "base_count": setup.get("base_count"),
+            # Weekly Stage view. Redundant as a mechanical gate, but it is the
+            # timeframe a human reads base structure on, so the note should be
+            # able to say "holding a rising 30-week line" or "still under it".
+            "weekly_stage": setup.get("weekly"),
             "trend_template_checks": c.get("checks"),
             "levels": c.get("levels"),
             "chart_patterns": [

@@ -1,7 +1,7 @@
 "use client";
 import { money } from "@/lib/format";
 
-export default function Candles({ candles, pivot, market, levels, markers, swings, contractions, bases }) {
+export default function Candles({ candles, pivot, market, levels, markers, swings, contractions, bases, weekly }) {
   const data = (candles || []).slice(-120);
   if (data.length < 10) return <div className="reasoning">No candle data stored for this pick.</div>;
   const W = 760, H = 300, VB = 54;
@@ -84,7 +84,7 @@ export default function Candles({ candles, pivot, market, levels, markers, swing
   }
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }} role="img" aria-label="Daily candlestick chart">
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }} role="img" aria-label={weekly ? "Weekly candlestick chart" : "Daily candlestick chart"}>
       {baseSpans.map((s) => (
         <g key={"base" + s.n}>
           <rect x={s.x0 * bw} y={4} width={(s.x1 - s.x0 + 1) * bw} height={H - VB - 8}
@@ -138,10 +138,16 @@ export default function Candles({ candles, pivot, market, levels, markers, swing
           </g>
         );
       })}
-      {maLine("m20", "#3dd6c3")}
-      {maLine("m50", "var(--blue)")}
-      {maLine("m150", "var(--amber)")}
-      {maLine("m200", "var(--purple)")}
+      {/* Weekly bars carry only the 30-week Stage line. Drawing 20/50/150/200
+          on a weekly axis would label lines that were never computed for it. */}
+      {weekly ? maLine("m30w", "var(--amber)") : (
+        <>
+          {maLine("m20", "#3dd6c3")}
+          {maLine("m50", "var(--blue)")}
+          {maLine("m150", "var(--amber)")}
+          {maLine("m200", "var(--purple)")}
+        </>
+      )}
       {markerEls}
     </svg>
   );
