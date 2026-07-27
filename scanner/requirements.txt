@@ -8,5 +8,6 @@ pyarrow>=17.0             # backtest.py --deep-history parquet cache
 pandas_market_calendars>=4.4
 TA-Lib>=0.6
 pytest>=8.0
+pyyaml>=6.0            # test_backtest reads .github/workflows to catch drift
 quantstats>=0.0.62
 google-genai>=1.0
