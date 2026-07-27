@@ -339,12 +339,23 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
             if c is None:
                 continue
             pos["held"] += 1
+            # "Close below the 50MA" means THE TREND BROKE — which presupposes
+            # a trend existed. Trend-continuation entries are above the 50MA by
+            # construction (the Trend Template requires it), so this arms on the
+            # entry bar and behaves exactly as before. REVERSAL entries are
+            # often still below it, and the unarmed rule ejected them instantly:
+            # undercut_rally exited after 2.3 days, 75% of them via this rule,
+            # measuring "enter and immediately exit" rather than the setup.
+            if not pos.get("ma50_armed") and pd.notna(ma50.at[d, t]) \
+                    and c >= float(ma50.at[d, t]):
+                pos["ma50_armed"] = True
             exit_px, reason = None, None
             if l is not None and l <= pos["stop"]:
                 # conservative: gap-down opens fill at the open, not the stop
                 exit_px = min(pos["stop"], o if o is not None else pos["stop"])
                 reason = "stop"
-            elif pd.notna(ma50.at[d, t]) and c < float(ma50.at[d, t]):
+            elif (pos.get("ma50_armed") and pd.notna(ma50.at[d, t])
+                  and c < float(ma50.at[d, t])):
                 exit_px, reason = c, "ma50_break"
             elif pos["held"] >= p["max_hold"]:
                 exit_px, reason = c, "time"
@@ -384,8 +395,11 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
                     continue
                 total_fees += fee
                 cash -= cost
+                m50 = ma50.at[d, t] if t in ma50.columns else None
                 open_pos[t] = {"date": d.strftime("%Y-%m-%d"), "entry": fill,
-                               "stop": stop, "shares": shares, "held": 0}
+                               "stop": stop, "shares": shares, "held": 0,
+                               # already in a trend at entry -> armed immediately
+                               "ma50_armed": bool(pd.notna(m50) and o >= float(m50))}
                 # same-day stop: a breakout that reverses through its stop on
                 # the entry bar exits TODAY — leaving it for tomorrow's exit
                 # loop quietly flattered every whipsaw entry by one day
