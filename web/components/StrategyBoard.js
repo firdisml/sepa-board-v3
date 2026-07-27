@@ -9,15 +9,19 @@
       receipts say what it is earning now, on signals actually published. A
       large gap either way is the thing worth investigating. */
 
-// Measured on the FAIR basis: 5 years, full Bursa universe, delisted counters
-// included, RS ranked across all ~1,062 names (deep-history runs 2026-07-27).
+// Measured on ONE engine, 2026-07-27: 5 years, full Bursa universe, delisted
+// included, ghost sessions filtered, 50MA exit armed only once in a trend.
+// An earlier version of this map mixed results from two engine versions —
+// numbers from different experimental setups are not comparable, and the
+// ma20_bounce ranking it implied did not survive re-measurement.
 // These REPLACE the earlier 2y figures, which came from a survivorship-biased
 // ~13-month window that sat entirely inside one green regime. Every ranking
 // below moved; ma20_bounce fell from an apparent +0.53R to +0.20R and lost
 // first place to breakout.
 const BACKTEST = {
-  breakout: 0.33, buyable_gap_up: 0.30, ma20_bounce: 0.20,
-  pocket_pivot: 0.08, ma50_bounce: -0.01, episodic_pivot: -0.35,
+  breakout: 0.45, ma20_bounce: 0.22, buyable_gap_up: 0.20,
+  pocket_pivot: 0.10, ma50_bounce: 0.02, ma200_reclaim: -0.14,
+  episodic_pivot: -0.35, undercut_rally: -0.45,
 };
 
 const LABEL = {

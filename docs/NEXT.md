@@ -69,8 +69,9 @@ Two known gotchas:
 - **Cache to parquet** keyed on `ticker+years`, or every re-run costs another
   ~130 API calls. `.gitignore` already covers `*.parquet`.
 
-**Expect the numbers to get WORSE. That is the point.** — CONFIRMED
-2026-07-27. Every tactic re-measured on the fair basis (5y, full universe,
+**Expect the numbers to get WORSE. That is the point.** — see the corrected
+table below; the FIRST attempt at this comparison was itself invalid.
+2026-07-27/28. Every tactic re-measured on the fair basis (5y, full universe,
 delisted included). The ranking did not survive:
 
 | tactic          | exp   |   n | win% |   PF | CAGR%  | maxDD%  |
