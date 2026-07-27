@@ -102,7 +102,13 @@ def _mkt(t: str) -> str:
 
 
 def _matrix(data: dict[str, pd.DataFrame], field: str) -> pd.DataFrame:
-    return pd.DataFrame({t: df[field] for t, df in data.items()}).sort_index()
+    """float32 on purpose. A survivorship-free US run is ~9,300 tickers x 1,250
+    bars = 11.6M cells PER matrix, and _signals_one_market builds around twenty
+    of them plus a cross-sectional rank — float64 OOM-killed the runner with no
+    traceback, which reads as a mystery failure. Prices need ~7 significant
+    digits; float32 gives that and halves the footprint."""
+    return pd.DataFrame({t: df[field] for t, df in data.items()},
+                        dtype="float32").sort_index()
 
 
 def _by_market(data: dict[str, pd.DataFrame]) -> dict[str, dict[str, pd.DataFrame]]:
@@ -761,6 +767,7 @@ def load_deep_history(market: str, years: int, min_bars: int = 260,
             "and the KLSE numeric-code filter before trusting these results.", market)
 
     targets = sorted(live_codes | delisted_codes)
+    min_dv = float(os.environ.get("DEEP_MIN_DOLLAR_VOL", 100_000))
     log.info("deep-history %s: %d survivors to fetch (%d live + %d delisted, "
              "unfiltered by liquidity — full universe feeds RS ranking)",
              market, len(targets), len(live_codes), len(delisted_codes))
@@ -768,7 +775,7 @@ def load_deep_history(market: str, years: int, min_bars: int = 260,
     today = dt.date.today()
     data: dict[str, pd.DataFrame] = {}
     failures: list[tuple[str, bool, str]] = []   # (ticker, was_delisted, reason)
-    fetched = cached = failed = mislabeled = 0
+    fetched = cached = failed = mislabeled = illiquid = 0
     for i, t in enumerate(targets, 1):
         df = _cached_history(t, years)
         if df is None:
@@ -795,13 +802,28 @@ def load_deep_history(market: str, years: int, min_bars: int = 260,
                 continue
 
         if len(df) >= min_bars:
-            data[t] = df
+            # Drop what could never have been traded. Deliberately a FLOOR
+            # (~$100k median daily value), not the live scan's $5m liquidity
+            # gate: the RS percentile pool must stay wide, and pre-filtering it
+            # is what inflated ranks the first time. This only removes shells
+            # no one could have bought, which on a delisted-inclusive US
+            # universe is most of the tail.
+            try:
+                dv = float((df["Close"] * df["Volume"]).median())
+            except Exception:
+                dv = 0.0
+            if dv >= min_dv:
+                data[t] = df
+            else:
+                illiquid += 1
         if i % 50 == 0:
             log.info("deep-history %s: %d/%d (%d fetched, %d cached, %d failed, %d mislabeled)",
                      market, i, len(targets), fetched, cached, failed, mislabeled)
     log.info("deep-history %s complete: %d tickers with >=%d bars "
-             "(%d fetched, %d cached, %d failed, %d mislabeled-delisted excluded)",
-             market, len(data), min_bars, fetched, cached, failed, mislabeled)
+             "(%d fetched, %d cached, %d failed, %d mislabeled-delisted, "
+             "%d below the $%.0fk tradeability floor)",
+             market, len(data), min_bars, fetched, cached, failed, mislabeled,
+             illiquid, min_dv / 1000)
     if failures:
         # name every failure so a systematic problem (a code-format change, a
         # plan-tier refusal) is distinguishable from ordinary vendor gaps on
