@@ -305,8 +305,62 @@ def _ma50_matrix(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return pd.concat(parts, axis=1).sort_index()
 
 
+
+def regime_by_date(bench: dict[str, pd.DataFrame], indices: list[str],
+                   dates) -> dict[str, str | None]:
+    """{YYYY-MM-DD: 'green'|'yellow'|'red'} using ONLY bars through that date.
+
+    Reuses scan.market_regime verbatim rather than reimplementing it, so the
+    regime a backtest attributes to a trade is the same one the live board
+    would have shown that evening. market_regime reads .iloc[-1], so slicing
+    the benchmark to `<= d` is what makes it as-of — any other slice would be
+    lookahead, and a regime split contaminated by the future is worse than no
+    split at all.
+
+    Computed only for the dates actually asked for (entry dates), because the
+    call is O(bars) each and most sessions never see a fill.
+    """
+    from . import scan as scanmod
+    out: dict[str, str | None] = {}
+    for d in dates:
+        sliced = {k: df.loc[:d] for k, df in bench.items()}
+        # the regime needs a 200-day MA; before that it is not "unknown", it is
+        # unmeasurable, and must not be bucketed as anything
+        if not sliced or any(len(v) < 200 for v in sliced.values()):
+            out[d] = None
+            continue
+        try:
+            out[d] = scanmod.market_regime(sliced, indices).get("light")
+        except Exception:
+            out[d] = None
+    return out
+
+
+def benchmarks_for(market: str, years: int) -> dict[str, pd.DataFrame]:
+    """Index history for the regime, deep enough for the tested window.
+
+    The warehouse only holds ~420 sessions and load_deep_history pulls COMMON
+    STOCK, which benchmarks are not — so a 5-year run has no index data unless
+    it is fetched explicitly.
+    """
+    from . import warehouse
+    out = {}
+    for b in warehouse.BENCHMARKS.get(market, []):
+        df = _cached_history(b, years)
+        if df is None:
+            try:
+                df = eod.history(b, years=years)
+                _save_cache(b, years, df)
+            except Exception as e:
+                log.warning("regime benchmark %s unavailable: %s", b, e)
+                continue
+        out[b] = df
+    return out
+
+
 def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
     """Pure function: OHLCV dict -> {stats, equity, trades, params}."""
+    regimes = kw.pop("regime_by_date", None) or {}
     costs = kw.pop("costs", None) or {m: dict(c) for m, c in COSTS.items()}
     p = {**DEFAULTS, **{k: v for k, v in kw.items() if v is not None}}
     p["costs"] = costs
@@ -371,7 +425,7 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
                     "entry": round(pos["entry"], 4), "exit": round(fill, 4),
                     "stop": round(pos["stop"], 4), "shares": pos["shares"],
                     "r": round(r, 2), "held": pos["held"], "reason": reason,
-                    "fees": round(fee, 2),
+                    "fees": round(fee, 2), "regime": pos.get("regime"),
                 })
                 del open_pos[t]
 
@@ -396,7 +450,9 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
                 total_fees += fee
                 cash -= cost
                 m50 = ma50.at[d, t] if t in ma50.columns else None
-                open_pos[t] = {"date": d.strftime("%Y-%m-%d"), "entry": fill,
+                _ds = d.strftime("%Y-%m-%d")
+                open_pos[t] = {"date": _ds, "entry": fill,
+                               "regime": regimes.get(_ds),
                                "stop": stop, "shares": shares, "held": 0,
                                # already in a trend at entry -> armed immediately
                                "ma50_armed": bool(pd.notna(m50) and o >= float(m50))}
@@ -417,6 +473,7 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
                         "stop": round(stop, 4), "shares": shares,
                         "r": round((out - fill) / (fill - stop), 2), "held": 0,
                         "reason": "stop", "fees": round(fee, 2),
+                        "regime": open_pos[t].get("regime"),
                     })
                     del open_pos[t]
 
@@ -443,12 +500,13 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
                 "entry": round(pos["entry"], 4), "exit": round(c, 4),
                 "stop": round(pos["stop"], 4), "shares": pos["shares"],
                 "r": round(r, 2), "held": pos["held"], "reason": "end_of_data",
-                "fees": round(fee, 2),
+                "fees": round(fee, 2), "regime": pos.get("regime"),
             })
             del open_pos[t]
 
     stats = compute_stats(curve, trades, p["start_equity"])
     stats["total_fees"] = round(total_fees, 2)
+    stats["by_regime"] = regime_breakdown(trades)
     return {"params": p, "stats": stats, "equity": curve, "trades": trades}
 
 
@@ -462,6 +520,52 @@ def run_per_market(data: dict[str, pd.DataFrame], markets=("US", "MY"), **kw) ->
     """
     by = _by_market(data)
     return {m: run_backtest(by[m], **kw) for m in markets if by.get(m)}
+
+
+
+def regime_breakdown(trades: list[dict]) -> dict | None:
+    """Expectancy split by the market regime AT ENTRY.
+
+    The blended headline number hides whether an edge is consistent or is two
+    different businesses averaged together — say +0.7R in green and -0.4R in
+    red. That distinction decides WHEN to trade, which for a ~32% win-rate
+    system matters more than finding another entry pattern. It is also the only
+    way to check the exposure ladder, whose sizing rules are inherited from
+    O'Neil rather than measured here.
+
+    `n` is reported per bucket and must be read: red regimes are rarer, so that
+    bucket is thinnest exactly where confidence is most wanted. Under 20 trades
+    a bucket is a hypothesis, not a finding — the same bar bootstrap_risk uses.
+    """
+    if not trades:
+        return None
+    buckets: dict[str, list[float]] = {}
+    for t in trades:
+        g = t.get("regime")
+        if not g:
+            continue          # unmeasurable (pre-200MA), never bucketed as anything
+        r = t.get("r")
+        if r is not None:
+            buckets.setdefault(g, []).append(float(r))
+    if not buckets:
+        return None
+    out = {}
+    for g in ("green", "yellow", "red"):
+        rs = buckets.get(g) or []
+        if not rs:
+            continue
+        wins = [r for r in rs if r > 0]
+        out[g] = {
+            "trades": len(rs),
+            "expectancy_r": round(sum(rs) / len(rs), 2),
+            "win_rate_pct": round(len(wins) / len(rs) * 100, 1),
+            "total_r": round(sum(rs), 1),
+            "thin": len(rs) < 20,     # say so rather than let the reader assume
+        }
+    untagged = sum(1 for t in trades if not t.get("regime"))
+    if untagged:
+        out["untagged"] = untagged
+    return out or None
 
 
 def compute_stats(curve: list[dict], trades: list[dict], start: float) -> dict:
@@ -818,9 +922,30 @@ def main() -> int:
     if a.my_fee is not None: costs["MY"]["fee_pct"] = a.my_fee
 
     markets = [m.strip().upper() for m in a.markets.split(",") if m.strip()]
-    results = run_per_market(data, markets=markets, risk_pct=a.risk_pct,
-                             stop_pct=a.stop_pct, max_open=a.max_open,
-                             max_hold=a.max_hold, costs=costs, strategy=a.strategy)
+    # Regime at entry, per market. Fetched here rather than inside the replay
+    # so one download serves every trade, and skipped silently if the index is
+    # unavailable — a missing benchmark must not fail a backtest.
+    results = {}
+    for m in markets:
+        sub = {t: df for t, df in data.items() if _mkt(t) == m}
+        if not sub:
+            continue
+        rmap = {}
+        try:
+            from . import scan as scanmod
+            bench = benchmarks_for(m, a.years)
+            if bench:
+                idx = scanmod.MARKETS.get(m, {}).get("indices") or list(bench)
+                entry_days = sorted({d.strftime("%Y-%m-%d")
+                                     for d in _matrix(sub, "Close").index})
+                rmap = regime_by_date(bench, idx, entry_days)
+                log.info("[%s] regime computed for %d sessions", m, len(rmap))
+        except Exception as e:
+            log.warning("[%s] regime split unavailable: %s", m, e)
+        results[m] = run_backtest(sub, risk_pct=a.risk_pct, stop_pct=a.stop_pct,
+                                  max_open=a.max_open, max_hold=a.max_hold,
+                                  costs=costs, strategy=a.strategy,
+                                  regime_by_date=rmap)
     if not results:
         log.error("No tickers matched the requested markets (%s) — aborting.", markets)
         return 1

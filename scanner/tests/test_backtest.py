@@ -683,3 +683,62 @@ class TestWorkflowStaysInSyncWithCode:
         opts = wf[True]["workflow_dispatch"]["inputs"]["strategy"]["options"]
         missing = set(STRATEGIES) - set(opts)
         assert not missing, f"not dispatchable in CI: {sorted(missing)}"
+
+
+class TestRegimeSplit:
+    """Expectancy split by market regime AT ENTRY. A split contaminated by the
+    future is worse than no split, so the no-lookahead property is the thing
+    most worth pinning."""
+
+    def _bench(self):
+        idx = pd.bdate_range("2023-01-02", periods=400)
+        n = len(idx)
+        c = np.empty(n)
+        c[0] = 100.0
+        for i in range(1, n):
+            c[i] = c[i - 1] * (1.002 if i < 300 else 0.994)   # uptrend then break
+        return {"IDX": pd.DataFrame(
+            {"Open": c, "High": c * 1.003, "Low": c * 0.997,
+             "Close": c, "Volume": np.full(n, 1e6)}, index=idx)}
+
+    def test_regime_uses_only_bars_through_that_date(self):
+        from scanner.backtest import regime_by_date
+        bench = self._bench()
+        full = bench["IDX"]
+        mid = full.index[320].strftime("%Y-%m-%d")
+        # same date, but the second call cannot see anything after `mid`
+        with_future = regime_by_date(bench, ["IDX"], [mid])[mid]
+        truncated = regime_by_date({"IDX": full.loc[:mid]}, ["IDX"], [mid])[mid]
+        assert with_future == truncated, \
+            "regime at a date must not change when future bars are removed"
+
+    def test_regime_flips_as_the_market_breaks_down(self):
+        from scanner.backtest import regime_by_date
+        bench = self._bench()
+        early = bench["IDX"].index[290].strftime("%Y-%m-%d")   # still trending
+        late = bench["IDX"].index[-1].strftime("%Y-%m-%d")     # after the break
+        got = regime_by_date(bench, ["IDX"], [early, late])
+        assert got[early] == "green"
+        assert got[late] in ("yellow", "red"), "a broken index must not read green"
+
+    def test_unmeasurable_regime_is_none_not_a_bucket(self):
+        from scanner.backtest import regime_by_date
+        bench = self._bench()
+        d = bench["IDX"].index[50].strftime("%Y-%m-%d")   # <200 bars of history
+        assert regime_by_date(bench, ["IDX"], [d])[d] is None
+
+    def test_breakdown_reports_n_and_flags_thin_buckets(self):
+        from scanner.backtest import regime_breakdown
+        trades = ([{"r": 1.0, "regime": "green"}] * 25
+                  + [{"r": -1.0, "regime": "red"}] * 5
+                  + [{"r": 0.5, "regime": None}])
+        out = regime_breakdown(trades)
+        assert out["green"]["trades"] == 25 and out["green"]["thin"] is False
+        assert out["red"]["thin"] is True, "5 trades must be flagged as thin"
+        assert out["untagged"] == 1, "unmeasurable trades counted, never bucketed"
+        assert "yellow" not in out
+
+    def test_breakdown_empty_is_none(self):
+        from scanner.backtest import regime_breakdown
+        assert regime_breakdown([]) is None
+        assert regime_breakdown([{"r": 1.0, "regime": None}]) is None
