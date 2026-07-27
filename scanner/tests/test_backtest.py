@@ -545,3 +545,123 @@ class TestGhostTradingDays:
         from scanner.backtest import _ma50_matrix
         m = _ma50_matrix(self._universe())
         assert m.notna().any().any(), "50MA exit must not be all-NaN"
+
+
+class TestReversalStrategies:
+    """Reversal tactics fire BEFORE the Trend Template passes — that is their
+    purpose and their risk. Each must require confirmation, or it degenerates
+    into episodic_pivot (723 trades, -0.38R, -96% DD)."""
+
+    IDX = pd.bdate_range("2022-01-03", periods=620)
+
+    def _control(self, seed=3):
+        """Flat control on the SAME index as the reversal fixture. make_df
+        hardcodes a 2024 start; pairing it with a 2022-based fixture makes the
+        union index mostly NaN and silently nulls every rolling window."""
+        rng = np.random.default_rng(seed)
+        c = 50 * np.cumprod(1 + rng.normal(0, 0.004, len(self.IDX)))
+        return pd.DataFrame({"Open": c, "High": c * 1.004, "Low": c * 0.996,
+                             "Close": c, "Volume": np.full(len(self.IDX), 1e6)},
+                            index=self.IDX)
+
+    def _decline_then_reclaim(self, reclaim_vol=4_000_000.0, strong_close=True):
+        """The real Stage 1 -> Stage 2 shape: advance, decline below the 200MA,
+        then a long sideways BASE that lets the 200MA flatten, then a
+        high-volume close back above it.
+
+        The base matters. A first draft declined right up to the reclaim day,
+        and the signal correctly refused to fire because the 200MA was still
+        collapsing — a reclaim into a falling average is a bounce in a
+        downtrend, not a turn. Flattening is what makes it a Stage 1 base.
+        """
+        idx = self.IDX
+        n = len(idx)
+        c = np.empty(n); v = np.full(n, 1_000_000.0)
+        c[0] = 100.0
+        for i in range(1, n):
+            if i < 200:
+                c[i] = c[i - 1] * 1.002            # advance, builds the 200MA
+            elif i < 330:
+                c[i] = c[i - 1] * 0.995            # decline under it
+            elif i < n - 1:
+                c[i] = c[i - 1] * (1.0008 if i % 2 else 0.9992)   # base, MA flattens
+            else:
+                c[i] = c[i - 1] * 1.06             # reclaim day
+                v[i] = reclaim_vol
+        # A weak close means price finished near the LOW of its range, i.e. the
+        # HIGH is far above the close — supply took the day back. (Dropping the
+        # low instead makes the close look strong: near the top of a wide bar.)
+        high = c * (1.004 if strong_close else 1.15)
+        return pd.DataFrame({"Open": c * 0.999, "High": high,
+                             "Low": c * 0.996, "Close": c, "Volume": v}, index=idx)
+
+    def test_ma200_reclaim_fires_on_confirmed_reclaim(self):
+        data = {"REV": self._decline_then_reclaim(),
+                "FLAT": self._control()}
+        sig = signals(data, strategy="ma200_reclaim")
+        assert bool(sig["REV"].iloc[-1]), "a volume reclaim of the 200MA must fire"
+
+    def test_ma200_reclaim_needs_volume(self):
+        # same price path, no volume expansion -> not a signal
+        data = {"REV": self._decline_then_reclaim(reclaim_vol=900_000.0),
+                "FLAT": self._control()}
+        assert not bool(signals(data, strategy="ma200_reclaim")["REV"].iloc[-1])
+
+    def test_ma200_reclaim_needs_a_strong_close(self):
+        # reclaimed intraday but closed near the low = supply won the day
+        data = {"REV": self._decline_then_reclaim(strong_close=False),
+                "FLAT": self._control()}
+        assert not bool(signals(data, strategy="ma200_reclaim")["REV"].iloc[-1])
+
+    def test_ma200_reclaim_silent_in_a_steady_uptrend(self):
+        # a stock that never went below its 200MA has nothing to reclaim
+        data = {"UP": self._uptrend(),
+                "FLAT": self._control()}
+        assert signals(data, strategy="ma200_reclaim")["UP"].sum() == 0
+
+    def _uptrend(self):
+        c = 50 * np.cumprod(np.full(len(self.IDX), 1.003))
+        return pd.DataFrame({"Open": c * 0.999, "High": c * 1.004, "Low": c * 0.996,
+                             "Close": c, "Volume": np.full(len(self.IDX), 1e6)},
+                            index=self.IDX)
+
+    def _undercut(self, reclaim=True):
+        idx = self.IDX[:300]
+        n = len(idx)
+        c = np.empty(n); v = np.full(n, 1_000_000.0)
+        c[0] = 50.0
+        for i in range(1, n):
+            if i < n - 60:
+                c[i] = c[i - 1] * 1.001
+            elif i < n - 3:
+                c[i] = c[i - 1] * 0.997        # drift into the prior low
+            elif i < n - 1:
+                c[i] = c[i - 1] * 0.97         # undercut it
+            else:
+                c[i] = c[i - 1] * (1.06 if reclaim else 0.99)
+                v[i] = 3_000_000.0
+        return pd.DataFrame({"Open": c * 0.999, "High": c * 1.005,
+                             "Low": c * 0.985, "Close": c, "Volume": v}, index=idx)
+
+    def test_undercut_rally_requires_the_reclaim_not_just_the_undercut(self):
+        # undercutting alone is a falling knife; the RECLAIM is the signal
+        no_reclaim = {"UC": self._undercut(reclaim=False),
+                      "FLAT": self._control().iloc[:300]}
+        assert not bool(signals(no_reclaim, strategy="undercut_rally")["UC"].iloc[-1])
+
+    def test_reversal_tactics_are_not_trend_template_gated(self):
+        # the whole point: they must be able to fire on a stock the Trend
+        # Template rejects, or they add nothing the board cannot already see
+        import inspect
+        from scanner import backtest
+        src = inspect.getsource(backtest._signals_one_market)
+        block = src[src.index('if strategy == "ma200_reclaim"'):src.index('pivot = H.rolling(25)')]
+        assert "tt &" not in block and "tt&" not in block
+
+    def test_all_strategies_still_run_clean(self):
+        from scanner.backtest import STRATEGIES
+        data = {"REV": self._decline_then_reclaim(),
+                "FLAT": self._control()}
+        for strat in STRATEGIES:
+            r = run_backtest(data, strategy=strat)
+            assert len(r["equity"]) > 0, f"{strat} produced no curve"

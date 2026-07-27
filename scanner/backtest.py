@@ -71,7 +71,17 @@ DEFAULTS = dict(risk_pct=1.0, stop_pct=0.08, max_open=8, max_pos_pct=0.25,
                 max_hold=40, start_equity=100_000.0, strategy="breakout")
 
 STRATEGIES = ("breakout", "ma20_bounce", "ma50_bounce", "episodic_pivot",
-             "pocket_pivot", "buyable_gap_up")
+             "pocket_pivot", "buyable_gap_up",
+             # REVERSAL tactics. Every tactic above is trend-continuation and
+             # gated on the Trend Template, so the board structurally cannot
+             # see a stock until AFTER its first leg — 30% off the low and
+             # within 25% of the high. These fire before that, which is the
+             # point and also the danger: dropping the trend gate is exactly
+             # what let episodic_pivot fire 723 times for -0.38R. Each carries
+             # its own confirmation requirement instead, and trade COUNT is
+             # reported beside expectancy because a tactic that fires
+             # constantly is suspect on its face.
+             "ma200_reclaim", "undercut_rally")
 
 # Per-side transaction costs, applied to EVERY fill (v1.3 "Slippage"):
 #   slip_pct — price impact: buys fill above the reference price, sells below.
@@ -181,6 +191,48 @@ def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout
         neglect = (pc / C.shift(64)) <= 1.10
         sig = gap_ok & (chg >= 0.06) & (vol_x >= 3) & (C >= O) & neglect
         return sig.fillna(False)
+
+    if strategy == "ma200_reclaim":
+        # The mechanical Stage 1 -> Stage 2 boundary. A stock that has lived
+        # BELOW its 200-day MA and closes back above it on real volume is the
+        # earliest defensible "the trend may have turned" signal.
+        # Confirmations, all required, because buying below the 200MA without
+        # them is knife-catching:
+        #   - genuinely weak lately: below the 200MA on >=40 of the last 90
+        #     sessions. Measured over 90 rather than 30 on purpose — a Stage 1
+        #     base STRADDLES the average, so requiring price still pinned
+        #     beneath it in the final month excludes the exact shape this is
+        #     meant to catch (a test fixture with a textbook base failed the
+        #     30-day version).
+        #   - the 200MA is not still collapsing; a reclaim into a falling
+        #     average is a bounce in a downtrend
+        #   - volume expansion on the reclaim day
+        #   - closes in the upper half of its range (demand held into the bell)
+        ma200_r = C.rolling(200).mean()
+        below = (C < ma200_r).rolling(90).sum() >= 40
+        reclaim = (C > ma200_r) & (C.shift(1) <= ma200_r.shift(1))
+        ma200_ok = ma200_r >= ma200_r.shift(20) * 0.98
+        vol_ok = V > 1.4 * vol50
+        rng = H - L
+        strong = (C - L) >= 0.5 * rng
+        return (below & reclaim & ma200_ok & vol_ok & strong).fillna(False)
+
+    if strategy == "undercut_rally":
+        # O'Neil/Kacher-Morales shakeout: price undercuts a prior significant
+        # low, stopping out everyone who set a stop just beneath it, then
+        # closes back above that low. The undercut is the SETUP; the reclaim
+        # is the signal.
+        #   prior_low  lowest low of the 40 sessions ending 5 days ago, so the
+        #              level pre-dates the undercut rather than being defined
+        #              by it (defining it from today would be lookahead)
+        prior_low = L.shift(5).rolling(40).min()
+        undercut = (L <= prior_low).rolling(5).sum() >= 1     # dipped under it
+        reclaim = (C > prior_low) & (C.shift(1) <= prior_low)
+        vol_ok = V > 1.2 * vol50
+        up_day = C > C.shift(1)
+        rng = H - L
+        strong = (C - L) >= 0.5 * rng
+        return (undercut & reclaim & vol_ok & up_day & strong).fillna(False)
 
     pivot = H.rolling(25).max().shift(1)          # prior 25d high, never today
 
