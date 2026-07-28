@@ -174,7 +174,7 @@ export default function Board({ run, candidates, regime, btByMarket, btByStrateg
         </div>
       </div>
 
-      <SidePanel c={detail} />
+      <SidePanel c={detail} regime={regime} />
     </div>
   );
 }

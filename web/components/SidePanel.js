@@ -15,7 +15,7 @@ function Stat({ k, v, tone }) {
   );
 }
 
-export default function SidePanel({ c }) {
+export default function SidePanel({ c, regime }) {
   const [tab, setTab] = useState("Plan");
   if (!c) return <div className="side"><div className="side-empty">Pick a counter.</div></div>;
 
@@ -30,6 +30,7 @@ export default function SidePanel({ c }) {
   const riskPct = piv && stp ? ((piv - stp) / piv) * 100 : null;
 
   const TABS = ["Plan", "News", "Filings", "Fundamentals"];
+  const mkt = regime?.[m] || null;
 
   return (
     <div className="side">
@@ -51,6 +52,25 @@ export default function SidePanel({ c }) {
         <Stat k="Risk" v={riskPct != null ? `${riskPct.toFixed(1)}%` : null} />
         <Stat k="Grade" v={f.grade} tone={f.grade === "A" || f.grade === "B" ? "g" : ""} />
       </div>
+
+      {/* The regime governing THIS counter's market. The plan below says where
+          to enter and where the stop goes; the regime says whether to be sizing
+          into it at all — and those two disagreeing (a clean setup under a red
+          light prescribing 0% risk) is exactly the case worth surfacing beside
+          the plan rather than only in the left sidebar, which lists BOTH
+          markets and cannot show which one applies here. */}
+      {mkt && (
+        <div className={"side-regime " + (mkt.light || "yellow")}>
+          <span className={"light " + (mkt.light || "yellow")}>●</span>
+          <span className="side-regime-t">
+            {m} regime {mkt.light}
+            {mkt.exposure?.risk_pct != null && (
+              <b> · {mkt.exposure.risk_pct}% risk/trade</b>
+            )}
+          </span>
+          {mkt.exposure?.rule && <div className="side-regime-r">{mkt.exposure.rule}</div>}
+        </div>
+      )}
 
       <div className="side-tabs">
         {TABS.map((t) => (

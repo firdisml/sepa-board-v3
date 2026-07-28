@@ -488,6 +488,21 @@ table.screener { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* Market switch: a segmented control, not three loose chips — MY/US/All are
    mutually exclusive views of one board, and adjacency is what says so.
    Only rendered when both markets are actually present (Board.js). */
+/* Regime banner in the right-hand panel: the sizing rule that governs the
+   plan shown beneath it. Colour follows the light, so a red banner over a
+   clean-looking setup is the intended visual conflict. */
+.side-regime {
+  margin: 0 10px 8px; padding: 6px 8px; border: 1px solid var(--line);
+  border-radius: 6px; font-size: 11px; line-height: 1.35;
+}
+.side-regime.green { border-color: var(--green); background: var(--green-bg); }
+.side-regime.red   { border-color: var(--red);   background: var(--red-bg); }
+.side-regime.yellow{ border-color: var(--amber); }
+.side-regime .light { margin-right: 5px; }
+.side-regime-t { font-weight: 600; text-transform: uppercase; letter-spacing: .3px; }
+.side-regime-r { color: var(--dim); margin-top: 2px; font-weight: 400;
+                 text-transform: none; letter-spacing: 0; }
+
 .mkt-switch { display: inline-flex; }
 .mkt-switch .chip { border-radius: 0; margin: 0; }
 .mkt-switch .chip:not(:last-child) { border-right: none; }

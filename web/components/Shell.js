@@ -1,5 +1,10 @@
 export default function Shell({ regime, asOf, active = "/", flush = false, children }) {
-  const my = regime?.MY;
+  // Both markets. US regime has been computed and stored since the market went
+  // live but was never rendered, so a red US light with 0% prescribed exposure
+  // was invisible while its counters sat on the board. A market only gets a box
+  // when it has regime data, so a Bursa-only day looks exactly as it did.
+  const boxes = [["MY — KLCI", regime?.MY], ["US — SPY/QQQ", regime?.US]]
+    .filter(([, r]) => r);
   const box = (label, r) => {
     if (!r) return null;
     const light = r.light || "yellow";
@@ -45,7 +50,7 @@ export default function Shell({ regime, asOf, active = "/", flush = false, child
       <aside className="sidebar">
         <div>
           <div className="brand">SEPA <span className="tick">Board</span></div>
-          <div className="brand-sub">Minervini screener · Bursa</div>
+          <div className="brand-sub">Minervini screener · Bursa + US</div>
         </div>
         <nav className="side-nav">
           {links.map(([href, label]) => (
@@ -53,7 +58,7 @@ export default function Shell({ regime, asOf, active = "/", flush = false, child
           ))}
         </nav>
         <div className="side-label">Market regime</div>
-        {box("MY — KLCI", my)}
+        {boxes.map(([label, r]) => <div key={label}>{box(label, r)}</div>)}
         <div className="side-foot">Scan: {asOf || "no data yet"}<br />Not financial advice.</div>
       </aside>
       {/* the terminal manages its own scrolling and gutters, so it is given
