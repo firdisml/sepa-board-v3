@@ -798,3 +798,36 @@ class TestNonMinerviniMethods:
         src = inspect.getsource(backtest._signals_one_market)
         blk = src[src.index('if strategy == "darvas"'):src.index('if strategy == "ma200_reclaim"')]
         assert "H.shift(10)" in blk
+
+
+def test_deep_history_failure_log_is_capped():
+    """The failure enumeration must not scale with the exchange.
+
+    Written for KLSE (~58 failures) it dumped every ticker into one log record.
+    On the US delisted-inclusive directory that is 11,155 tickers in a single
+    ~150KB line, emitted immediately after the fetch summary — and it was the
+    last thing three consecutive US runs ever printed. The count and the reason
+    classes carry the diagnostic value; the full roster does not.
+    """
+    import inspect
+    from scanner import backtest
+
+    src = inspect.getsource(backtest.load_deep_history)
+    assert "_sample(dead)" in src and "_sample(live)" in src, \
+        "failure enumerations must go through the capped _sample helper"
+    assert "[t for t, _ in dead]" not in src, \
+        "uncapped ticker roster reintroduced into the log call"
+
+    ns = {}
+    exec(compile(
+        "def _sample(rows, n=50):\n"
+        "    names = [t for t, _ in rows]\n"
+        "    if len(names) <= n:\n"
+        "        return names\n"
+        "    return names[:n] + ['... +%d more' % (len(names) - n)]\n",
+        "<sample>", "exec"), ns)
+    _sample = ns["_sample"]
+
+    assert _sample([("A", "x"), ("B", "y")]) == ["A", "B"]
+    big = _sample([(f"T{i}", "r") for i in range(11155)])
+    assert len(big) == 51 and big[-1] == "... +11105 more"

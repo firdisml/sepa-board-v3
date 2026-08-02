@@ -54,9 +54,21 @@ import json
 import logging
 import math
 import os
+import sys
+
+import resource
 
 import numpy as np
 import pandas as pd
+
+
+def _rss_mb() -> float:
+    """Peak RSS so far, in MB. Logged at phase boundaries because a US deep
+    run died with no output at all and the cause had to be inferred four
+    separate times; a number in the log ends that guessing permanently.
+    ru_maxrss is KB on Linux, bytes on macOS."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
 
 from . import eodhd_client as eod
 
@@ -916,13 +928,25 @@ def load_deep_history(market: str, years: int, min_bars: int = 260,
         # survivorship hole this function exists to close.
         dead = [(t, r) for t, was_dead, r in failures if was_dead]
         live = [(t, r) for t, was_dead, r in failures if not was_dead]
+        # Cap the enumerations. This was written for KLSE, where "name every
+        # failure" means ~58 tickers. On the US delisted-inclusive directory it
+        # means 11,155 — a single ~150KB log record, emitted right after the
+        # fetch summary and the last thing the process ever did on three
+        # separate runs. The diagnostic value is in the COUNT and the reason
+        # classes below; a sample gives the same signal at bounded cost.
+        def _sample(rows, n=50):
+            names = [t for t, _ in rows]
+            if len(names) <= n:
+                return names
+            return names[:n] + ["... +%d more" % (len(names) - n)]
+
         if dead:
             log.warning("deep-history %s: %d DELISTED tickers had no history — each "
                         "is a residual survivorship hole: %s",
-                        market, len(dead), [t for t, _ in dead])
+                        market, len(dead), _sample(dead))
         if live:
             log.warning("deep-history %s: %d live tickers had no history: %s",
-                        market, len(live), [t for t, _ in live])
+                        market, len(live), _sample(live))
         reasons = {}
         for _, _, r in failures:
             key = r.split(":")[0][:60]   # collapse per-ticker detail into classes
@@ -994,8 +1018,9 @@ def main() -> int:
             conn = dbmod.connect()
         if a.deep_history:
             data = load_deep_history(a.universe, years=a.years, min_bars=a.min_bars)
-            log.info("Deep-history backtest: %d %s tickers with >=%d bars (incl. delisted)",
-                     len(data), a.universe, a.min_bars)
+            log.info("Deep-history backtest: %d %s tickers with >=%d bars "
+                     "(incl. delisted), peak RSS %.0f MB",
+                     len(data), a.universe, a.min_bars, _rss_mb())
         else:
             data = warehouse.load_window(conn, a.universe, min_bars=a.min_bars)
             log.info("Full-universe backtest: %d %s tickers with >=%d bars",
