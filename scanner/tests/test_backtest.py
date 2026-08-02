@@ -742,3 +742,59 @@ class TestRegimeSplit:
         from scanner.backtest import regime_breakdown
         assert regime_breakdown([]) is None
         assert regime_breakdown([{"r": 1.0, "regime": None}]) is None
+
+
+class TestNonMinerviniMethods:
+    """donchian is the NULL HYPOTHESIS: a naive channel break with no trend
+    template, no VCP, no volume test. If it matches the SEPA breakout, the
+    elaborate entry logic is not earning its complexity."""
+
+    def _chan(self):
+        # long drift, tight range, then a clean break of the 20-day high
+        idx = pd.bdate_range("2024-01-02", periods=300)
+        n = len(idx)
+        c = np.empty(n); v = np.full(n, 1_000_000.0)
+        c[0] = 50.0
+        for i in range(1, n):
+            if i < n - 40:
+                c[i] = c[i - 1] * 1.001
+            elif i < n - 1:
+                c[i] = c[i - 1] * (1.0004 if i % 2 else 0.9996)   # range
+            else:
+                c[i] = c[i - 1] * 1.06                            # break
+                v[i] = 4_000_000.0
+        return pd.DataFrame({"Open": c * 0.999, "High": c * 1.004, "Low": c * 0.996,
+                             "Close": c, "Volume": v}, index=idx)
+
+    def test_donchian_fires_on_a_channel_break(self):
+        sig = signals({"CH": self._chan()}, strategy="donchian")
+        assert bool(sig["CH"].iloc[-1])
+
+    def test_donchian_is_deliberately_ungated(self):
+        # the control must NOT inherit the Trend Template, or it stops being a
+        # control and silently becomes another SEPA variant
+        import inspect
+        from scanner import backtest
+        src = inspect.getsource(backtest._signals_one_market)
+        blk = src[src.index('if strategy == "donchian"'):src.index('if strategy == "darvas"')]
+        assert "tt" not in blk.replace("that", "")
+
+    def test_donchian_needs_no_volume_confirmation(self):
+        # Turtle System 1 has no volume rule; adding one would not be Donchian
+        df = self._chan()
+        df.iloc[-1, df.columns.get_loc("Volume")] = 100.0   # dried-up break
+        assert bool(signals({"CH": df}, strategy="donchian")["CH"].iloc[-1])
+
+    def test_darvas_requires_a_real_box_not_just_a_high(self):
+        # a stock that ran straight up has no consolidation, so no box
+        straight = make_df(n=300, trend=0.004, seed=5)
+        assert signals({"UP": straight}, strategy="darvas")["UP"].sum() == 0
+
+    def test_darvas_box_is_defined_before_the_break(self):
+        # box_top uses H.shift(10): drawing the box from today's data would
+        # define the level using the very bar that breaks it
+        import inspect
+        from scanner import backtest
+        src = inspect.getsource(backtest._signals_one_market)
+        blk = src[src.index('if strategy == "darvas"'):src.index('if strategy == "ma200_reclaim"')]
+        assert "H.shift(10)" in blk

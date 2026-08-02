@@ -81,7 +81,13 @@ STRATEGIES = ("breakout", "ma20_bounce", "ma50_bounce", "episodic_pivot",
              # its own confirmation requirement instead, and trade COUNT is
              # reported beside expectancy because a tactic that fires
              # constantly is suspect on its face.
-             "ma200_reclaim", "undercut_rally")
+             "ma200_reclaim", "undercut_rally",
+             # NON-MINERVINI methods, measured on the same basis so they are
+             # comparable to everything above. donchian is deliberately the
+             # NULL HYPOTHESIS for this whole project: if a naive 20-day
+             # channel break matches the SEPA breakout, then VCP detection,
+             # contraction counting and the Trend Template are decoration.
+             "donchian", "darvas")
 
 # Per-side transaction costs, applied to EVERY fill (v1.3 "Slippage"):
 #   slip_pct — price impact: buys fill above the reference price, sells below.
@@ -207,6 +213,33 @@ def _signals_one_market(data: dict[str, pd.DataFrame], strategy: str = "breakout
         neglect = (pc / C.shift(64)) <= 1.10
         sig = gap_ok & (chg >= 0.06) & (vol_x >= 3) & (C >= O) & neglect
         return sig.fillna(False)
+
+    if strategy == "donchian":
+        # Turtle System 1, unmodified and DELIBERATELY UNGATED: close above the
+        # highest high of the prior N days. No trend template, no VCP, no
+        # volume test — that is the point. It is the control this project has
+        # never run, and the comparison against `breakout` is the measurement
+        # that says whether the elaborate entry logic earns its complexity.
+        n = 20
+        chan = H.rolling(n).max().shift(1)      # prior N days, never today
+        return ((C > chan) & (C.shift(1) <= chan.shift(1))).fillna(False)
+
+    if strategy == "darvas":
+        # Darvas box: a new high, then a CONSOLIDATION that neither exceeds
+        # that high nor breaks its floor, then a break of the box top. Darvas
+        # traded this on weekly telegrams from Wall Street with no chart at
+        # all, so the rule has to be crude to be faithful.
+        #   box_top    the 60-day high, fixed 10 days back so the box is DEFINED
+        #              BEFORE the break rather than drawn around it
+        #   quiet      price spent those 10 days inside the box: never exceeded
+        #              the top, never lost 8% beneath it
+        box_top = H.shift(10).rolling(60).max()
+        floor = box_top * 0.92
+        inside_top = (H <= box_top).rolling(10).sum() >= 9
+        inside_floor = (L >= floor).rolling(10).sum() >= 9
+        breakout = (C > box_top) & (C.shift(1) <= box_top.shift(1))
+        vol_ok = V > 1.4 * vol50
+        return (breakout & inside_top & inside_floor & vol_ok).fillna(False)
 
     if strategy == "ma200_reclaim":
         # The mechanical Stage 1 -> Stage 2 boundary. A stock that has lived
