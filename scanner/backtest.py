@@ -414,6 +414,21 @@ def benchmarks_for(market: str, years: int) -> dict[str, pd.DataFrame]:
 def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
     """Pure function: OHLCV dict -> {stats, equity, trades, params}."""
     regimes = kw.pop("regime_by_date", None) or {}
+    # A CALLABLE may be passed instead of a dict, so the regime is computed
+    # only for dates where a fill actually happens (~300) rather than every
+    # session in the window (~1,250). Each computation re-slices the benchmark
+    # and re-runs two Python loops, so the eager version was O(n^2) and became
+    # a large share of a US deep-history run's wall time.
+    _regime_fn = regimes if callable(regimes) else None
+    if _regime_fn is not None:
+        regimes = {}
+
+    def _regime_at(ds: str):
+        if _regime_fn is None:
+            return regimes.get(ds)
+        if ds not in regimes:
+            regimes[ds] = _regime_fn(ds)
+        return regimes[ds]
     costs = kw.pop("costs", None) or {m: dict(c) for m, c in COSTS.items()}
     p = {**DEFAULTS, **{k: v for k, v in kw.items() if v is not None}}
     p["costs"] = costs
@@ -528,7 +543,7 @@ def run_backtest(data: dict[str, pd.DataFrame], **kw) -> dict:
                 m50 = ma50.at[d, t] if t in ma50.columns else None
                 _ds = d.strftime("%Y-%m-%d")
                 open_pos[t] = {"date": _ds, "entry": fill,
-                               "regime": regimes.get(_ds),
+                               "regime": _regime_at(_ds),
                                "stop": stop, "shares": shares, "held": 0,
                                # already in a trend at entry -> armed immediately
                                "ma50_armed": bool(pd.notna(m50) and o >= float(m50))}
@@ -1028,10 +1043,10 @@ def main() -> int:
             bench = benchmarks_for(m, a.years)
             if bench:
                 idx = scanmod.MARKETS.get(m, {}).get("indices") or list(bench)
-                entry_days = sorted({d.strftime("%Y-%m-%d")
-                                     for d in _matrix(sub, "Close").index})
-                rmap = regime_by_date(bench, idx, entry_days)
-                log.info("[%s] regime computed for %d sessions", m, len(rmap))
+                # a lazy lookup, not a precomputed map: regime is only
+                # needed on days a position is actually opened
+                rmap = lambda ds: regime_by_date(bench, idx, [ds]).get(ds)
+                log.info("[%s] regime available (computed lazily per fill)", m)
         except Exception as e:
             log.warning("[%s] regime split unavailable: %s", m, e)
         results[m] = run_backtest(sub, risk_pct=a.risk_pct, stop_pct=a.stop_pct,
