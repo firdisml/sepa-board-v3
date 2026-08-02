@@ -77,6 +77,14 @@ jobs:
       - name: Run backtest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Python block-buffers stdout when it is not a TTY. A US deep-history
+          # run died after the fetch with NO output at all — the fetch's own
+          # frequent logging had been flushing the buffer, so once it stopped,
+          # every later line INCLUDING THE TRACEBACK sat unflushed and was lost
+          # when the process ended. That read as a mysterious silent kill and
+          # sent three separate investigations after memory that was never the
+          # problem (measured: the compute is 13s and ~1GB at that exact shape).
+          PYTHONUNBUFFERED: "1"
           # only consumed when --deep-history calls eod.symbols()/eod.history();
           # a plain warehouse-backed run never touches the network
           EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
