@@ -52,7 +52,7 @@ jobs:
     # before the backtest could run, reported only as "failure".
     # Subsequent same-week runs hit the parquet cache and finish quickly; this
     # budget is for the first cold fetch of a large exchange.
-    timeout-minutes: 120
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -69,11 +69,22 @@ jobs:
       - name: Compute cache week
         id: week
         run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      # SPLIT restore/save, and save with if:always(). actions/cache only
+      # writes its cache when the job SUCCEEDS, which turned a single failure
+      # into a self-perpetuating one: the run died, its 12,107 fetched
+      # histories were discarded, the next run re-fetched all 23,262 symbols
+      # from cold, EODHD throttled the repeated hammering until the fetch took
+      # 109 minutes instead of 28, and the job then died on the timeout instead
+      # — never once reaching the step that would have saved the cache. Every
+      # run logged "0 cached". Saving unconditionally means expensive fetch
+      # work survives a failure and the next attempt starts warm.
       - name: Restore deep-history cache
-        uses: actions/cache@v4
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: .cache/deep_history
           key: deep-history-${{ inputs.years || '2' }}y-${{ steps.week.outputs.week }}
+          restore-keys: deep-history-${{ inputs.years || '2' }}y-
       - name: Run backtest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -108,3 +119,11 @@ jobs:
             --years "$BT_YEARS" \
             $DEEP_FLAG \
             --label "$LABEL"
+
+      - name: Save deep-history cache
+        # always(): the whole point is that a failed run keeps its fetch work.
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/deep_history
+          key: deep-history-${{ inputs.years || '2' }}y-${{ steps.week.outputs.week }}
